@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 
 	"rag-chat/internal/document"
+	"rag-chat/internal/logging"
 	"rag-chat/internal/models"
 	"rag-chat/internal/nexa"
 	"rag-chat/internal/vector"
@@ -305,17 +307,60 @@ func (p *Pipeline) buildPromptWithContextAndDocuments(systemPrompt string, conte
 	return builder.String()
 }
 
+func (p *Pipeline) buildPromptWithContextAndDocumentsAndFileList(systemPrompt string, contextMessages []vector.Message, contextChunks []vector.DocumentChunk, allDocs []vector.Document, userMessage string) string {
+	var builder strings.Builder
+
+	// Add loaded documents list first (for questions about files/directory structure)
+	if len(allDocs) > 0 {
+		builder.WriteString("Loaded documents in current context:\n\n")
+		for i, doc := range allDocs {
+			builder.WriteString(fmt.Sprintf("%d. %s (%d bytes, %d chunks)\n", i+1, doc.FilePath, doc.FileSize, doc.ChunkCount))
+		}
+		builder.WriteString("\n---\n\n")
+	}
+
+	// Add document chunks (specific relevant excerpts)
+	if len(contextChunks) > 0 {
+		builder.WriteString("Relevant document excerpts:\n\n")
+		for i, chunk := range contextChunks {
+			builder.WriteString(fmt.Sprintf("%d. [doc: %s]\n%s\n\n", i+1, chunk.FilePath, chunk.Content))
+		}
+		builder.WriteString("---\n\n")
+	}
+
+	// Add conversation context
+	if len(contextMessages) > 0 {
+		builder.WriteString("Context from previous conversations:\n\n")
+		for i, msg := range contextMessages {
+			builder.WriteString(fmt.Sprintf("%d. [%s]: %s\n", i+1, msg.Role, msg.Content))
+		}
+		builder.WriteString("\n---\n\n")
+	}
+
+	builder.WriteString("Current message: ")
+	builder.WriteString(userMessage)
+
+	return builder.String()
+}
+
 // LoadDocuments loads documents from a file or directory path
 func (p *Pipeline) LoadDocuments(ctx context.Context, chat *vector.Chat, path string, query string) (<-chan string, <-chan error, error) {
+	logging.Info("LoadDocuments called: path=%s, query=%s, chatID=%s", path, query, chat.ID)
+
 	loader := document.NewLoader()
 
 	// Load documents
 	loadResult, err := loader.LoadPath(ctx, path, chat.ID)
 	if err != nil {
+		logging.Error("Failed to load documents from path %s: %v", path, err)
 		return nil, nil, fmt.Errorf("failed to load documents: %w", err)
 	}
 
+	logging.Info("Load result: success=%d, total_chunks=%d, errors=%d",
+		loadResult.SuccessCount, loadResult.TotalChunks, len(loadResult.Errors))
+
 	if loadResult.SuccessCount == 0 {
+		logging.Error("No supported documents found in path: %s", path)
 		return nil, nil, fmt.Errorf("no supported documents found in path")
 	}
 
@@ -330,21 +375,31 @@ func (p *Pipeline) LoadDocuments(ctx context.Context, chat *vector.Chat, path st
 
 		// Store documents and embed chunks
 		totalChunks := 0
+		badgerStore, ok := p.vectorStore.(*vector.BadgerStore)
+		if !ok {
+			errorChan <- fmt.Errorf("vector store is not BadgerStore type")
+			return
+		}
+
 		for _, doc := range loadResult.Documents {
+			logging.Debug("Processing document: %s (size=%d)", doc.FileName, doc.FileSize)
+
 			// Store document metadata
-			if badgerStore, ok := p.vectorStore.(*vector.BadgerStore); ok {
-				if err := badgerStore.StoreDocument(ctx, &doc); err != nil {
-					errorChan <- fmt.Errorf("failed to store document %s: %w", doc.FileName, err)
-					return
-				}
+			if err := badgerStore.StoreDocument(ctx, &doc); err != nil {
+				logging.Error("Failed to store document metadata for %s: %v", doc.FileName, err)
+				errorChan <- fmt.Errorf("failed to store document %s: %w", doc.FileName, err)
+				return
 			}
+			logging.Debug("Stored document metadata for %s", doc.FileName)
 
 			// Get chunks for this document
 			chunks, err := loader.GetDocumentChunks(doc.ID, doc.FilePath, chat.ID)
 			if err != nil {
+				logging.Error("Failed to get chunks for %s: %v", doc.FileName, err)
 				errorChan <- fmt.Errorf("failed to chunk document %s: %w", doc.FileName, err)
 				return
 			}
+			logging.Debug("Created %d chunks for %s", len(chunks), doc.FileName)
 
 			// Prepare chunk contents for batch embedding
 			chunkContents := make([]string, len(chunks))
@@ -353,70 +408,89 @@ func (p *Pipeline) LoadDocuments(ctx context.Context, chat *vector.Chat, path st
 			}
 
 			// Generate embeddings for all chunks in batch
+			logging.Debug("Generating embeddings for %d chunks of %s", len(chunks), doc.FileName)
 			embeddings, err := p.nexaClient.GenerateEmbeddings(ctx, chat.EmbedModel, chunkContents)
 			if err != nil {
+				logging.Error("Failed to generate embeddings for %s: %v", doc.FileName, err)
 				errorChan <- fmt.Errorf("failed to generate embeddings for %s: %w", doc.FileName, err)
 				return
 			}
+			logging.Debug("Generated %d embeddings for %s (dim=%d)", len(embeddings), doc.FileName, len(embeddings[0]))
 
 			// Store chunks with embeddings
-			if badgerStore, ok := p.vectorStore.(*vector.BadgerStore); ok {
-				for i, chunk := range chunks {
-					chunk.Embedding = embeddings[i]
-					if err := badgerStore.StoreDocumentChunk(ctx, &chunk); err != nil {
-						errorChan <- fmt.Errorf("failed to store chunk %d of %s: %w", i, doc.FileName, err)
-						return
-					}
+			for i, chunk := range chunks {
+				chunk.Embedding = embeddings[i]
+				if err := badgerStore.StoreDocumentChunk(ctx, &chunk); err != nil {
+					logging.Error("Failed to store chunk %d of %s: %v", i, doc.FileName, err)
+					errorChan <- fmt.Errorf("failed to store chunk %d of %s: %w", i, doc.FileName, err)
+					return
 				}
 			}
+			logging.Info("Successfully stored %d chunks for %s", len(chunks), doc.FileName)
 
 			totalChunks += len(chunks)
-			responseChan <- fmt.Sprintf("Loaded %s (%d chunks)\n", doc.FileName, len(chunks))
+			// Removed verbose output - all logged to file instead
 		}
-
-		// Send summary
-		responseChan <- fmt.Sprintf("\nSuccessfully loaded %d documents (%d chunks total)\n", loadResult.SuccessCount, totalChunks)
 
 		// If user provided a query, process it immediately
 		if query != "" {
-			responseChan <- "\nProcessing your query...\n\n"
+			logging.Info("Processing query after document loading: %s", query)
 
 			// Generate embedding for query
+			logging.Debug("Generating embedding for query")
 			embeddings, err := p.nexaClient.GenerateEmbeddings(ctx, chat.EmbedModel, []string{query})
 			if err != nil {
+				logging.Error("Failed to generate query embedding: %v", err)
 				errorChan <- fmt.Errorf("failed to generate query embedding: %w", err)
 				return
 			}
 			queryEmbedding := embeddings[0]
+			logging.Debug("Query embedding generated (dim=%d)", len(queryEmbedding))
 
 			// Store user query as message
 			userMsg := models.NewMessage(chat.ID, "user", query)
 			if err := p.vectorStore.StoreMessage(ctx, userMsg.ID, "user", query, queryEmbedding, time.Now()); err != nil {
+				logging.Error("Failed to store user query: %v", err)
 				errorChan <- fmt.Errorf("failed to store user query: %w", err)
 				return
 			}
+			logging.Debug("Stored user query message")
 
 			// Search for relevant context (both messages and document chunks)
 			retrievalTopK := chat.TopK
 			if chat.UseReranking {
 				retrievalTopK = chat.TopK * 2
 			}
+			logging.Debug("Searching for similar content (topK=%d)", retrievalTopK)
 
 			var contextMessages []vector.Message
 			var contextChunks []vector.DocumentChunk
 
-			if badgerStore, ok := p.vectorStore.(*vector.BadgerStore); ok {
-				msgs, chunks, err := badgerStore.SearchSimilarWithChunks(ctx, queryEmbedding, retrievalTopK)
-				if err != nil {
-					errorChan <- fmt.Errorf("failed to search context: %w", err)
-					return
-				}
-				contextMessages = msgs
-				contextChunks = chunks
+			msgs, chunks, err := badgerStore.SearchSimilarWithChunks(ctx, queryEmbedding, retrievalTopK)
+			if err != nil {
+				logging.Error("Failed to search similar content: %v", err)
+				errorChan <- fmt.Errorf("failed to search context: %w", err)
+				return
+			}
+			contextMessages = msgs
+			contextChunks = chunks
+
+			logging.Info("Search results: found %d messages and %d document chunks", len(msgs), len(chunks))
+			for i, chunk := range chunks {
+				logging.Debug("Chunk %d: file=%s, pos=%d-%d, content_len=%d",
+					i, chunk.FilePath, chunk.StartPos, chunk.EndPos, len(chunk.Content))
 			}
 
+			// Get full document list for context
+			allDocs, err := badgerStore.GetDocuments(ctx)
+			if err != nil {
+				logging.Error("Failed to get documents list: %v", err)
+				allDocs = []vector.Document{} // Continue with empty list
+			}
+			logging.Debug("Total documents in chat: %d", len(allDocs))
+
 			// Build prompt with both message and document context
-			prompt := p.buildPromptWithContextAndDocuments(chat.SystemPrompt, contextMessages, contextChunks, query)
+			prompt := p.buildPromptWithContextAndDocumentsAndFileList(chat.SystemPrompt, contextMessages, contextChunks, allDocs, query)
 
 			// Call LLM
 			req := nexa.ChatCompletionRequest{
@@ -485,9 +559,6 @@ func (p *Pipeline) LoadDocuments(ctx context.Context, chat *vector.Chat, path st
 					return
 				}
 			}
-		} else {
-			// No query provided, send default message
-			responseChan <- "\nYou now have access to these documents in the conversation context.\n"
 		}
 	}()
 
@@ -529,6 +600,22 @@ func (p *Pipeline) ProcessUserMessageWithDocuments(
 		}
 		contextMessages = msgs
 		contextChunks = chunks
+
+		// Check if user mentioned a specific filename - if so, prioritize chunks from that file
+		allDocs, _ := badgerStore.GetDocuments(ctx)
+		mentionedFile := findMentionedFile(userMessage, allDocs)
+		if mentionedFile != "" {
+			logging.Info("User mentioned specific file: %s - filtering chunks", mentionedFile)
+			// Filter to only chunks from that file, or if none found, get all chunks from that file
+			filteredChunks := filterChunksByFile(chunks, mentionedFile)
+			if len(filteredChunks) == 0 {
+				// No chunks matched via similarity, fetch all chunks from the mentioned file
+				logging.Info("No similar chunks from %s, fetching all chunks from file", mentionedFile)
+				filteredChunks = getAllChunksFromFile(badgerStore, ctx, mentionedFile)
+			}
+			contextChunks = filteredChunks
+			logging.Debug("After filename filtering: %d chunks from %s", len(contextChunks), mentionedFile)
+		}
 	} else {
 		// Fallback to message-only search
 		msgs, err := p.vectorStore.SearchSimilar(ctx, userEmbedding, retrievalTopK)
@@ -562,7 +649,12 @@ func (p *Pipeline) ProcessUserMessageWithDocuments(
 	// Step 5: Build prompt with context
 	var prompt string
 	if len(contextChunks) > 0 {
-		prompt = p.buildPromptWithContextAndDocuments(chat.SystemPrompt, contextMessages, contextChunks, userMessage)
+		// Get full document list
+		var allDocs []vector.Document
+		if badgerStore, ok := p.vectorStore.(*vector.BadgerStore); ok {
+			allDocs, _ = badgerStore.GetDocuments(ctx) // Ignore error, continue with empty list
+		}
+		prompt = p.buildPromptWithContextAndDocumentsAndFileList(chat.SystemPrompt, contextMessages, contextChunks, allDocs, userMessage)
 	} else {
 		prompt = p.buildPromptWithContext(chat.SystemPrompt, contextMessages, userMessage)
 	}
@@ -640,4 +732,79 @@ func (p *Pipeline) ProcessUserMessageWithDocuments(
 	}()
 
 	return responseChan, finalErrChan, nil
+}
+
+// findMentionedFile checks if the user message mentions any of the loaded document filenames
+func findMentionedFile(userMessage string, docs []vector.Document) string {
+	lowerMessage := strings.ToLower(userMessage)
+
+	for _, doc := range docs {
+		// Check both full path and just filename
+		fileName := filepath.Base(doc.FilePath)
+		if strings.Contains(lowerMessage, strings.ToLower(fileName)) {
+			return doc.FilePath
+		}
+		if strings.Contains(lowerMessage, strings.ToLower(doc.FilePath)) {
+			return doc.FilePath
+		}
+	}
+
+	return ""
+}
+
+// filterChunksByFile returns only chunks from a specific file path
+func filterChunksByFile(chunks []vector.DocumentChunk, filePath string) []vector.DocumentChunk {
+	var filtered []vector.DocumentChunk
+	for _, chunk := range chunks {
+		if chunk.FilePath == filePath {
+			filtered = append(filtered, chunk)
+		}
+	}
+	return filtered
+}
+
+// getAllChunksFromFile retrieves all chunks for a specific file
+func getAllChunksFromFile(store *vector.BadgerStore, ctx context.Context, filePath string) []vector.DocumentChunk {
+	// Get all documents to find matching document ID
+	docs, err := store.GetDocuments(ctx)
+	if err != nil {
+		logging.Error("Failed to get documents: %v", err)
+		return []vector.DocumentChunk{}
+	}
+
+	var targetDocID string
+	for _, doc := range docs {
+		if doc.FilePath == filePath {
+			targetDocID = doc.ID
+			break
+		}
+	}
+
+	if targetDocID == "" {
+		logging.Error("Document not found: %s", filePath)
+		return []vector.DocumentChunk{}
+	}
+
+	// Search with a dummy embedding to get all chunks, then filter by document ID
+	dummyEmbedding := make([]float32, 768)
+	_, allChunks, err := store.SearchSimilarWithChunks(ctx, dummyEmbedding, 100)
+	if err != nil {
+		logging.Error("Failed to search chunks: %v", err)
+		return []vector.DocumentChunk{}
+	}
+
+	var filtered []vector.DocumentChunk
+	for _, chunk := range allChunks {
+		if chunk.DocumentID == targetDocID {
+			filtered = append(filtered, chunk)
+		}
+	}
+
+	// Sort by chunk index to maintain order
+	sort.Slice(filtered, func(i, j int) bool {
+		return filtered[i].ChunkIndex < filtered[j].ChunkIndex
+	})
+
+	logging.Debug("Retrieved %d chunks for document %s", len(filtered), filePath)
+	return filtered
 }

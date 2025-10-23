@@ -3,7 +3,6 @@ package document
 import (
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 )
 
@@ -30,79 +29,121 @@ func DetectPath(input string) PathDetectionResult {
 		HasPath: false,
 	}
 
-	// Windows absolute path patterns:
-	// 1. Drive letter followed by colon and backslash
-	// 2. May contain spaces, alphanumeric, dots, underscores, dashes
-	// 3. May be quoted or unquoted
-
-	// Pattern matches:
-	// - C:\path\to\file
-	// - "C:\path with spaces\file"
-	// - D:\folder
-	pathPattern := regexp.MustCompile(`(?:["]?)([A-Za-z]:\\(?:[^\\/:*?"<>|\r\n]+\\)*[^\\/:*?"<>|\r\n]*)(?:["]?)`)
-
-	matches := pathPattern.FindAllStringSubmatch(input, -1)
-
-	if len(matches) == 0 {
-		return result
+	// Try to find Windows absolute paths by looking for drive letter patterns
+	// Split input into tokens and try to build paths
+	var candidatePaths []struct {
+		path      string
+		startIdx  int
+		endIdx    int
+		info      os.FileInfo
 	}
 
-	// Find the longest valid path (most specific)
-	var bestMatch string
-	var bestMatchIndex int
-	var bestMatchLength int
+	// Look for drive letter pattern (C:, D:, etc.)
+	for i := 0; i < len(input)-2; i++ {
+		// Check for drive letter pattern: [A-Z]:
+		if (input[i] >= 'A' && input[i] <= 'Z' || input[i] >= 'a' && input[i] <= 'z') &&
+			input[i+1] == ':' && (i+2 < len(input) && input[i+2] == '\\') {
 
-	for _, match := range matches {
-		if len(match) < 2 {
-			continue
-		}
+			// Found potential start of Windows path
+			// Extract path by reading until whitespace or end
+			pathStart := i
+			pathEnd := pathStart + 3 // Start after C:\
 
-		candidatePath := strings.Trim(match[1], `"'`)
+			// Read until we hit something that definitely can't be a path
+			// We'll be greedy and read everything, then trim back
+			for pathEnd < len(input) {
+				ch := input[pathEnd]
+				// Stop at characters that are definitely not in Windows paths
+				if ch == '\r' || ch == '\n' || ch == '\t' {
+					break
+				}
+				pathEnd++
+			}
 
-		// Check if path exists and is accessible
-		if info, err := os.Stat(candidatePath); err == nil {
-			// Valid path found
-			matchIndex := strings.Index(input, match[0])
-			if len(candidatePath) > bestMatchLength {
-				bestMatch = candidatePath
-				bestMatchIndex = matchIndex
-				bestMatchLength = len(candidatePath)
-				result.IsFile = !info.IsDir()
-				result.IsDirectory = info.IsDir()
+			candidatePath := input[pathStart:pathEnd]
+
+			// Try progressively shorter paths starting from the longest
+			// This handles cases like "C:\path\to\file.txt extra text"
+			for len(candidatePath) > 3 {
+				// Clean up trailing whitespace and backslashes
+				candidatePath = strings.TrimRight(candidatePath, " \t\\")
+
+				// Skip if it ends with invalid path characters
+				if len(candidatePath) > 0 {
+					lastChar := candidatePath[len(candidatePath)-1]
+					if lastChar == '<' || lastChar == '>' || lastChar == '|' ||
+						lastChar == '"' || lastChar == '*' || lastChar == '?' || lastChar == ':' {
+						// Remove this character and try again
+						candidatePath = candidatePath[:len(candidatePath)-1]
+						continue
+					}
+				}
+
+				// Test if this path exists
+				if info, err := os.Stat(candidatePath); err == nil {
+					candidatePaths = append(candidatePaths, struct {
+						path      string
+						startIdx  int
+						endIdx    int
+						info      os.FileInfo
+					}{
+						path:     candidatePath,
+						startIdx: pathStart,
+						endIdx:   pathStart + len(candidatePath),
+						info:     info,
+					})
+					break
+				}
+
+				// Try removing last token (space-separated word or path component)
+				// First try removing after last space
+				if lastSpace := strings.LastIndex(candidatePath, " "); lastSpace > 3 {
+					candidatePath = candidatePath[:lastSpace]
+					continue
+				}
+
+				// Then try removing last path component
+				lastBackslash := strings.LastIndex(candidatePath, "\\")
+				if lastBackslash <= 2 { // Don't go before "C:\"
+					break
+				}
+				candidatePath = candidatePath[:lastBackslash]
 			}
 		}
 	}
 
-	if bestMatch == "" {
+	// Pick the longest valid path
+	var bestCandidate *struct {
+		path      string
+		startIdx  int
+		endIdx    int
+		info      os.FileInfo
+	}
+
+	for i := range candidatePaths {
+		if bestCandidate == nil || len(candidatePaths[i].path) > len(bestCandidate.path) {
+			bestCandidate = &candidatePaths[i]
+		}
+	}
+
+	if bestCandidate == nil {
 		return result
 	}
 
-	// Extract queries before and after the path
+	// Found a valid path
 	result.HasPath = true
-	result.Path = bestMatch
+	result.Path = bestCandidate.path
 	result.Exists = true
+	result.IsFile = !bestCandidate.info.IsDir()
+	result.IsDirectory = bestCandidate.info.IsDir()
 
-	// Find the actual position in the original input
-	// Account for potential quotes around the path
-	pathStartIdx := bestMatchIndex
-	pathEndIdx := pathStartIdx + len(bestMatch)
-
-	// Adjust for quotes if present
-	if pathStartIdx > 0 && (input[pathStartIdx-1] == '"' || input[pathStartIdx-1] == '\'') {
-		pathStartIdx--
-	}
-	if pathEndIdx < len(input) && (input[pathEndIdx] == '"' || input[pathEndIdx] == '\'') {
-		pathEndIdx++
+	// Extract queries before and after the path
+	if bestCandidate.startIdx > 0 {
+		result.QueryBefore = strings.TrimSpace(input[:bestCandidate.startIdx])
 	}
 
-	// Extract query before path
-	if pathStartIdx > 0 {
-		result.QueryBefore = strings.TrimSpace(input[:pathStartIdx])
-	}
-
-	// Extract query after path
-	if pathEndIdx < len(input) {
-		result.QueryAfter = strings.TrimSpace(input[pathEndIdx:])
+	if bestCandidate.endIdx < len(input) {
+		result.QueryAfter = strings.TrimSpace(input[bestCandidate.endIdx:])
 	}
 
 	return result

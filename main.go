@@ -9,6 +9,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"rag-chat/internal/logging"
 	"rag-chat/internal/nexa"
 	"rag-chat/internal/rag"
 	"rag-chat/internal/ui"
@@ -52,6 +53,14 @@ type model struct {
 }
 
 func main() {
+	// Initialize logging
+	if err := logging.InitLogger(); err != nil {
+		log.Fatalf("Failed to initialize logger: %v", err)
+	}
+	defer logging.Close()
+
+	logging.Info("RAG Chat application started")
+
 	// Initialize BadgerDB
 	homeDir, err := os.UserHomeDir()
 	if err != nil {

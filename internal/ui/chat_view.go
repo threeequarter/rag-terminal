@@ -12,6 +12,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"rag-chat/internal/document"
+	"rag-chat/internal/logging"
 	"rag-chat/internal/rag"
 	"rag-chat/internal/vector"
 )
@@ -233,16 +234,24 @@ func (m *ChatViewModel) addUserMessage(content string) {
 
 func (m ChatViewModel) sendMessage(userMessage string) tea.Cmd {
 	return func() tea.Msg {
+		logging.Info("sendMessage called: message='%s', chatID=%s", userMessage, m.chat.ID)
+
 		// Check if message contains a file/folder path
 		pathResult := document.DetectPath(userMessage)
+
+		logging.Debug("Path detection result: hasPath=%v, path='%s', shouldProcess=%v, queryBefore='%s', queryAfter='%s'",
+			pathResult.HasPath, pathResult.Path, pathResult.ShouldProcessPath(),
+			pathResult.QueryBefore, pathResult.QueryAfter)
 
 		if pathResult.ShouldProcessPath() {
 			// Extract the query (if any)
 			query := pathResult.GetFullQuery()
+			logging.Info("Processing document path: path='%s', query='%s'", pathResult.Path, query)
 
 			// Load documents through pipeline
 			streamChan, errChan, err := m.pipeline.LoadDocuments(m.ctx, m.chat, pathResult.Path, query)
 			if err != nil {
+				logging.Error("LoadDocuments failed: %v", err)
 				return ChatResponseError{Err: err}
 			}
 
@@ -250,8 +259,10 @@ func (m ChatViewModel) sendMessage(userMessage string) tea.Cmd {
 		}
 
 		// No path detected, process as regular message with document support
+		logging.Debug("No path detected, processing as regular message")
 		streamChan, errChan, err := m.pipeline.ProcessUserMessageWithDocuments(m.ctx, m.chat, userMessage)
 		if err != nil {
+			logging.Error("ProcessUserMessageWithDocuments failed: %v", err)
 			return ChatResponseError{Err: err}
 		}
 
