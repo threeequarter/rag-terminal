@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(nexa list:*)",
+      "Bash(curl:*)",
+      "Bash(nexa run:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}
