@@ -288,7 +288,6 @@ func (m *ChatViewModel) renderMessages() {
 				Render("You: ") + msg.Content
 
 			b.WriteString(lipgloss.NewStyle().
-				Background(lipgloss.Color("24")).
 				Foreground(lipgloss.Color("231")).
 				Padding(0, 1).
 				MarginBottom(1).
@@ -309,7 +308,6 @@ func (m *ChatViewModel) renderMessages() {
 				Render("Assistant: ") + msg.Content
 
 			b.WriteString(lipgloss.NewStyle().
-				Background(lipgloss.Color("236")).
 				Foreground(lipgloss.Color("231")).
 				Padding(0, 1).
 				MarginBottom(1).
