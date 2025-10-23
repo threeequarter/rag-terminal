@@ -1,4 +1,4 @@
-# Nexa RAG Chat Application
+# RAG Chat Application
 
 A Go-based RAG (Retrieval-Augmented Generation) chat application with a Bubbletea TUI interface, utilizing local Nexa SDK models and BadgerDB for vector storage.
 
