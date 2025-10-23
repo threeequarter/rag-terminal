@@ -11,8 +11,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"nexa-rag-chat/internal/rag"
-	"nexa-rag-chat/internal/vector"
+	"rag-chat/internal/rag"
+	"rag-chat/internal/vector"
 )
 
 type ChatViewModel struct {

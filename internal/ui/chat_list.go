@@ -7,7 +7,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"nexa-rag-chat/internal/vector"
+	"rag-chat/internal/vector"
 )
 
 type ChatListModel struct {

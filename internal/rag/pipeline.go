@@ -7,9 +7,9 @@ import (
 	"strings"
 	"time"
 
-	"nexa-rag-chat/internal/models"
-	"nexa-rag-chat/internal/nexa"
-	"nexa-rag-chat/internal/vector"
+	"rag-chat/internal/models"
+	"rag-chat/internal/nexa"
+	"rag-chat/internal/vector"
 )
 
 type Pipeline struct {

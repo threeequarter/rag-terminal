@@ -1,4 +1,4 @@
-module nexa-rag-chat
+module rag-chat
 
 go 1.25.3
 

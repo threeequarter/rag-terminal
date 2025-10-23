@@ -7,7 +7,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"nexa-rag-chat/internal/nexa"
+	"rag-chat/internal/nexa"
 )
 
 type modelSelectState int
@@ -41,9 +41,9 @@ func (i modelItem) Description() string { return fmt.Sprintf("Type: %s", i.model
 func (i modelItem) FilterValue() string { return i.model.Name }
 
 type ModelSelectionComplete struct {
-	LLMModel     string
-	EmbedModel   string
-	RerankModel  string
+	LLMModel    string
+	EmbedModel  string
+	RerankModel string
 }
 
 func NewModelSelectModel(models []nexa.Model, width, height int) ModelSelectModel {

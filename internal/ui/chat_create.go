@@ -11,7 +11,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"nexa-rag-chat/internal/vector"
+	"rag-chat/internal/vector"
 )
 
 type chatCreateField int
@@ -25,18 +25,18 @@ const (
 )
 
 type ChatCreateModel struct {
-	nameInput          textinput.Model
-	systemPromptArea   textarea.Model
-	temperatureInput   textinput.Model
-	topKInput          textinput.Model
-	rerankingEnabled   bool
-	currentField       chatCreateField
-	llmModel           string
-	embedModel         string
-	rerankModel        string
-	width              int
-	height             int
-	err                error
+	nameInput        textinput.Model
+	systemPromptArea textarea.Model
+	temperatureInput textinput.Model
+	topKInput        textinput.Model
+	rerankingEnabled bool
+	currentField     chatCreateField
+	llmModel         string
+	embedModel       string
+	rerankModel      string
+	width            int
+	height           int
+	err              error
 }
 
 type ChatCreated struct {

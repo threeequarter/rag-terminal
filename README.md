@@ -67,7 +67,7 @@ A Go-based RAG (Retrieval-Augmented Generation) chat application with a Bubblete
 
 1. Clone or navigate to the repository:
    ```bash
-   cd C:\Users\v3555\Documents\Git\rag-ui
+   cd .\rag-ui
    ```
 
 2. Install dependencies:
@@ -77,14 +77,14 @@ A Go-based RAG (Retrieval-Augmented Generation) chat application with a Bubblete
 
 3. Build the application:
    ```bash
-   go build -o nexa-rag-chat.exe .
+   go build -o rag-chat.exe .
    ```
 
 ## Usage
 
 1. **Start the application**:
    ```bash
-   .\nexa-rag-chat.exe
+   .\rag-chat.exe
    ```
 
 2. **Select Models**:
@@ -131,7 +131,7 @@ A Go-based RAG (Retrieval-Augmented Generation) chat application with a Bubblete
 
 ### Default Settings
 
-- **Database Path**: `~/.nexa-rag-chat/db/`
+- **Database Path**: `~/.rag-chat/db/`
 - **Nexa API URL**: `http://127.0.0.1:18181`
 - **Default Temperature**: 0.7
 - **Default Top K**: 5
@@ -150,7 +150,7 @@ Customize these when creating a chat:
 ## Project Structure
 
 ```
-nexa-rag-chat/
+rag-chat/
 ├── main.go                     # Application entry point
 ├── internal/
 │   ├── nexa/                   # Nexa API client
@@ -211,7 +211,7 @@ nexa-rag-chat/
 - Verify Nexa server is running: Check http://127.0.0.1:18181
 
 ### "Failed to open badger database"
-- Check that `~/.nexa-rag-chat/db/` directory is accessible
+- Check that `~/.rag-chat/db/` directory is accessible
 - Ensure no other instance is running
 - Try deleting the database directory to start fresh
 
@@ -231,16 +231,16 @@ nexa-rag-chat/
 
 ```bash
 # Navigate to repository
-cd C:\Users\v3555\Documents\Git\rag-ui
+cd .\rag-ui
 
 # Install dependencies
 go mod download
 
 # Build
-go build -o nexa-rag-chat.exe .
+go build -o rag-chat.exe .
 
 # Run
-.\nexa-rag-chat.exe
+.\rag-chat.exe
 ```
 
 ### Testing
