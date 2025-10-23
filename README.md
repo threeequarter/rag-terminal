@@ -68,7 +68,7 @@ A Go-based RAG (Retrieval-Augmented Generation) chat application with a Bubblete
 
 1. Clone or navigate to the repository:
    ```bash
-   cd .\rag-ui
+   cd .\rag-terminal
    ```
 
 2. Install dependencies:
@@ -78,14 +78,14 @@ A Go-based RAG (Retrieval-Augmented Generation) chat application with a Bubblete
 
 3. Build the application:
    ```bash
-   go build -o rag-chat.exe .
+   go build -o rag-terminal.exe .
    ```
 
 ## Usage
 
 1. **Start the application**:
    ```bash
-   .\rag-chat.exe
+   .\rag-terminal.exe
    ```
 
 2. **Select Models**:
@@ -123,7 +123,7 @@ A Go-based RAG (Retrieval-Augmented Generation) chat application with a Bubblete
 
 ### Default Settings
 
-- **Database Path**: `~/.rag-chat/db/<chat-id>/` (separate database per chat)
+- **Database Path**: `~/.rag-terminal/db/<chat-id>/` (separate database per chat)
 - **Nexa API URL**: `http://127.0.0.1:18181`
 - **Temperature**: 0.7
 - **Top K**: 5
@@ -140,7 +140,7 @@ A Go-based RAG (Retrieval-Augmented Generation) chat application with a Bubblete
 ## Project Structure
 
 ```
-rag-chat/
+rag-terminal/
 ├── main.go                     # Application entry point & state management
 ├── internal/
 │   ├── nexa/                   # Nexa API client
@@ -199,7 +199,7 @@ rag-chat/
 - Verify Nexa server is running: Check http://127.0.0.1:18181
 
 ### "Failed to open badger database"
-- Check that `~/.rag-chat/db/<chat-id>/` directory is accessible
+- Check that `~/.rag-terminal/db/<chat-id>/` directory is accessible
 - Ensure no other instance is accessing the same chat
 - Close chat properly before opening another to avoid database locks
 
@@ -219,16 +219,16 @@ rag-chat/
 
 ```bash
 # Navigate to repository
-cd .\rag-ui
+cd .\rag-terminal
 
 # Install dependencies
 go mod download
 
 # Build
-go build -o rag-chat.exe .
+go build -o rag-terminal.exe .
 
 # Run
-.\rag-chat.exe
+.\rag-terminal.exe
 ```
 
 ### Testing
