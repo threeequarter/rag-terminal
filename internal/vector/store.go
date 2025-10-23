@@ -61,3 +61,30 @@ type Chat struct {
 	UseReranking bool // When true, uses LLM-based reranking
 	MaxTokens    int
 }
+
+// Document represents a file that has been loaded into the chat context
+type Document struct {
+	ID          string            `json:"id"`
+	ChatID      string            `json:"chat_id"`
+	FilePath    string            `json:"file_path"`
+	FileName    string            `json:"file_name"`
+	FileSize    int64             `json:"file_size"`
+	MimeType    string            `json:"mime_type"`
+	Encoding    string            `json:"encoding"`
+	ChunkCount  int               `json:"chunk_count"`
+	Metadata    map[string]string `json:"metadata"`
+	UploadedAt  time.Time         `json:"uploaded_at"`
+}
+
+// DocumentChunk represents a chunk of a document that has been embedded
+type DocumentChunk struct {
+	ID         string    `json:"id"`
+	DocumentID string    `json:"document_id"`
+	ChatID     string    `json:"chat_id"`
+	ChunkIndex int       `json:"chunk_index"`
+	Content    string    `json:"content"`
+	Embedding  []float32 `json:"embedding"`
+	StartPos   int       `json:"start_pos"`
+	EndPos     int       `json:"end_pos"`
+	FilePath   string    `json:"file_path"` // Denormalized for easy retrieval
+}

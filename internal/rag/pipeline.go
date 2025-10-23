@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"rag-chat/internal/document"
 	"rag-chat/internal/models"
 	"rag-chat/internal/nexa"
 	"rag-chat/internal/vector"
@@ -275,4 +276,368 @@ func (p *Pipeline) buildPromptWithContext(systemPrompt string, contextMessages [
 	builder.WriteString(userMessage)
 
 	return builder.String()
+}
+
+func (p *Pipeline) buildPromptWithContextAndDocuments(systemPrompt string, contextMessages []vector.Message, contextChunks []vector.DocumentChunk, userMessage string) string {
+	var builder strings.Builder
+
+	// Add document chunks first (more specific context)
+	if len(contextChunks) > 0 {
+		builder.WriteString("Relevant document excerpts:\n\n")
+		for i, chunk := range contextChunks {
+			builder.WriteString(fmt.Sprintf("%d. [doc: %s]\n%s\n\n", i+1, chunk.FilePath, chunk.Content))
+		}
+		builder.WriteString("---\n\n")
+	}
+
+	// Add conversation context
+	if len(contextMessages) > 0 {
+		builder.WriteString("Context from previous conversations:\n\n")
+		for i, msg := range contextMessages {
+			builder.WriteString(fmt.Sprintf("%d. [%s]: %s\n", i+1, msg.Role, msg.Content))
+		}
+		builder.WriteString("\n---\n\n")
+	}
+
+	builder.WriteString("Current message: ")
+	builder.WriteString(userMessage)
+
+	return builder.String()
+}
+
+// LoadDocuments loads documents from a file or directory path
+func (p *Pipeline) LoadDocuments(ctx context.Context, chat *vector.Chat, path string, query string) (<-chan string, <-chan error, error) {
+	loader := document.NewLoader()
+
+	// Load documents
+	loadResult, err := loader.LoadPath(ctx, path, chat.ID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to load documents: %w", err)
+	}
+
+	if loadResult.SuccessCount == 0 {
+		return nil, nil, fmt.Errorf("no supported documents found in path")
+	}
+
+	// Create response channels
+	responseChan := make(chan string, 10)
+	errorChan := make(chan error, 1)
+
+	// Process documents asynchronously
+	go func() {
+		defer close(responseChan)
+		defer close(errorChan)
+
+		// Store documents and embed chunks
+		totalChunks := 0
+		for _, doc := range loadResult.Documents {
+			// Store document metadata
+			if badgerStore, ok := p.vectorStore.(*vector.BadgerStore); ok {
+				if err := badgerStore.StoreDocument(ctx, &doc); err != nil {
+					errorChan <- fmt.Errorf("failed to store document %s: %w", doc.FileName, err)
+					return
+				}
+			}
+
+			// Get chunks for this document
+			chunks, err := loader.GetDocumentChunks(doc.ID, doc.FilePath, chat.ID)
+			if err != nil {
+				errorChan <- fmt.Errorf("failed to chunk document %s: %w", doc.FileName, err)
+				return
+			}
+
+			// Prepare chunk contents for batch embedding
+			chunkContents := make([]string, len(chunks))
+			for i, chunk := range chunks {
+				chunkContents[i] = chunk.Content
+			}
+
+			// Generate embeddings for all chunks in batch
+			embeddings, err := p.nexaClient.GenerateEmbeddings(ctx, chat.EmbedModel, chunkContents)
+			if err != nil {
+				errorChan <- fmt.Errorf("failed to generate embeddings for %s: %w", doc.FileName, err)
+				return
+			}
+
+			// Store chunks with embeddings
+			if badgerStore, ok := p.vectorStore.(*vector.BadgerStore); ok {
+				for i, chunk := range chunks {
+					chunk.Embedding = embeddings[i]
+					if err := badgerStore.StoreDocumentChunk(ctx, &chunk); err != nil {
+						errorChan <- fmt.Errorf("failed to store chunk %d of %s: %w", i, doc.FileName, err)
+						return
+					}
+				}
+			}
+
+			totalChunks += len(chunks)
+			responseChan <- fmt.Sprintf("Loaded %s (%d chunks)\n", doc.FileName, len(chunks))
+		}
+
+		// Send summary
+		responseChan <- fmt.Sprintf("\nSuccessfully loaded %d documents (%d chunks total)\n", loadResult.SuccessCount, totalChunks)
+
+		// If user provided a query, process it immediately
+		if query != "" {
+			responseChan <- "\nProcessing your query...\n\n"
+
+			// Generate embedding for query
+			embeddings, err := p.nexaClient.GenerateEmbeddings(ctx, chat.EmbedModel, []string{query})
+			if err != nil {
+				errorChan <- fmt.Errorf("failed to generate query embedding: %w", err)
+				return
+			}
+			queryEmbedding := embeddings[0]
+
+			// Store user query as message
+			userMsg := models.NewMessage(chat.ID, "user", query)
+			if err := p.vectorStore.StoreMessage(ctx, userMsg.ID, "user", query, queryEmbedding, time.Now()); err != nil {
+				errorChan <- fmt.Errorf("failed to store user query: %w", err)
+				return
+			}
+
+			// Search for relevant context (both messages and document chunks)
+			retrievalTopK := chat.TopK
+			if chat.UseReranking {
+				retrievalTopK = chat.TopK * 2
+			}
+
+			var contextMessages []vector.Message
+			var contextChunks []vector.DocumentChunk
+
+			if badgerStore, ok := p.vectorStore.(*vector.BadgerStore); ok {
+				msgs, chunks, err := badgerStore.SearchSimilarWithChunks(ctx, queryEmbedding, retrievalTopK)
+				if err != nil {
+					errorChan <- fmt.Errorf("failed to search context: %w", err)
+					return
+				}
+				contextMessages = msgs
+				contextChunks = chunks
+			}
+
+			// Build prompt with both message and document context
+			prompt := p.buildPromptWithContextAndDocuments(chat.SystemPrompt, contextMessages, contextChunks, query)
+
+			// Call LLM
+			req := nexa.ChatCompletionRequest{
+				Model: chat.LLMModel,
+				Messages: []nexa.ChatMessage{
+					{Role: "system", Content: chat.SystemPrompt},
+					{Role: "user", Content: prompt},
+				},
+				Temperature: chat.Temperature,
+				MaxTokens:   chat.MaxTokens,
+				Stream:      true,
+			}
+
+			streamChan, errChan, err := p.nexaClient.ChatCompletion(ctx, req)
+			if err != nil {
+				errorChan <- fmt.Errorf("failed to start chat completion: %w", err)
+				return
+			}
+
+			// Stream response
+			var fullResponse strings.Builder
+			for {
+				select {
+				case token, ok := <-streamChan:
+					if !ok {
+						// Store assistant response
+						assistantMsg := models.NewMessage(chat.ID, "assistant", fullResponse.String())
+
+						// Store with empty embedding first
+						emptyEmbedding := make([]float32, 0)
+						if err := p.vectorStore.StoreMessage(ctx, assistantMsg.ID, "assistant", fullResponse.String(), emptyEmbedding, time.Now()); err != nil {
+							errorChan <- fmt.Errorf("failed to store assistant message: %w", err)
+							return
+						}
+
+						// Generate embedding asynchronously
+						capturedChatID := chat.ID
+						capturedMessageID := assistantMsg.ID
+						capturedContent := fullResponse.String()
+						capturedEmbedModel := chat.EmbedModel
+
+						go func() {
+							time.Sleep(500 * time.Millisecond)
+							embeddings, err := p.nexaClient.GenerateEmbeddings(context.Background(), capturedEmbedModel, []string{capturedContent})
+							if err != nil {
+								return
+							}
+							if badgerStore, ok := p.vectorStore.(*vector.BadgerStore); ok {
+								badgerStore.StoreMessageToChat(context.Background(), capturedChatID, capturedMessageID, "assistant", capturedContent, embeddings[0], time.Now())
+							}
+						}()
+
+						return
+					}
+					fullResponse.WriteString(token)
+					responseChan <- token
+
+				case err := <-errChan:
+					if err != nil {
+						errorChan <- err
+						return
+					}
+
+				case <-ctx.Done():
+					errorChan <- ctx.Err()
+					return
+				}
+			}
+		} else {
+			// No query provided, send default message
+			responseChan <- "\nYou now have access to these documents in the conversation context.\n"
+		}
+	}()
+
+	return responseChan, errorChan, nil
+}
+
+// ProcessUserMessageWithDocuments is an enhanced version that considers document chunks
+func (p *Pipeline) ProcessUserMessageWithDocuments(
+	ctx context.Context,
+	chat *vector.Chat,
+	userMessage string,
+) (<-chan string, <-chan error, error) {
+	// Step 1: Generate embedding for user message
+	embeddings, err := p.nexaClient.GenerateEmbeddings(ctx, chat.EmbedModel, []string{userMessage})
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to generate user message embedding: %w", err)
+	}
+	userEmbedding := embeddings[0]
+
+	// Step 2: Store user message
+	userMsg := models.NewMessage(chat.ID, "user", userMessage)
+	if err := p.vectorStore.StoreMessage(ctx, userMsg.ID, "user", userMessage, userEmbedding, time.Now()); err != nil {
+		return nil, nil, fmt.Errorf("failed to store user message: %w", err)
+	}
+
+	// Step 3: Search for similar content (both messages and document chunks)
+	retrievalTopK := chat.TopK * 2
+	if !chat.UseReranking {
+		retrievalTopK = chat.TopK
+	}
+
+	var contextMessages []vector.Message
+	var contextChunks []vector.DocumentChunk
+
+	if badgerStore, ok := p.vectorStore.(*vector.BadgerStore); ok {
+		msgs, chunks, err := badgerStore.SearchSimilarWithChunks(ctx, userEmbedding, retrievalTopK)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to search similar content: %w", err)
+		}
+		contextMessages = msgs
+		contextChunks = chunks
+	} else {
+		// Fallback to message-only search
+		msgs, err := p.vectorStore.SearchSimilar(ctx, userEmbedding, retrievalTopK)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to search similar messages: %w", err)
+		}
+		contextMessages = msgs
+	}
+
+	// Step 4: Optional LLM-based reranking (only for messages for now)
+	if chat.UseReranking && len(contextMessages) > 0 {
+		reranked, err := p.rerankMessagesWithLLM(ctx, chat.LLMModel, userMessage, contextMessages, chat.TopK/2)
+		if err == nil {
+			contextMessages = reranked
+		} else {
+			if len(contextMessages) > chat.TopK/2 {
+				contextMessages = contextMessages[:chat.TopK/2]
+			}
+		}
+	} else {
+		if len(contextMessages) > chat.TopK/2 {
+			contextMessages = contextMessages[:chat.TopK/2]
+		}
+	}
+
+	// Limit document chunks
+	if len(contextChunks) > chat.TopK/2 {
+		contextChunks = contextChunks[:chat.TopK/2]
+	}
+
+	// Step 5: Build prompt with context
+	var prompt string
+	if len(contextChunks) > 0 {
+		prompt = p.buildPromptWithContextAndDocuments(chat.SystemPrompt, contextMessages, contextChunks, userMessage)
+	} else {
+		prompt = p.buildPromptWithContext(chat.SystemPrompt, contextMessages, userMessage)
+	}
+
+	// Step 6: Call chat completion
+	req := nexa.ChatCompletionRequest{
+		Model: chat.LLMModel,
+		Messages: []nexa.ChatMessage{
+			{Role: "system", Content: chat.SystemPrompt},
+			{Role: "user", Content: prompt},
+		},
+		Temperature: chat.Temperature,
+		MaxTokens:   chat.MaxTokens,
+		Stream:      true,
+	}
+
+	streamChan, errChan, err := p.nexaClient.ChatCompletion(ctx, req)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to start chat completion: %w", err)
+	}
+
+	// Step 7: Collect response and store assistant message
+	responseChan := make(chan string, 10)
+	finalErrChan := make(chan error, 1)
+
+	go func() {
+		defer close(responseChan)
+		defer close(finalErrChan)
+
+		var fullResponse strings.Builder
+		for {
+			select {
+			case token, ok := <-streamChan:
+				if !ok {
+					assistantMsg := models.NewMessage(chat.ID, "assistant", fullResponse.String())
+
+					emptyEmbedding := make([]float32, 0)
+					if err := p.vectorStore.StoreMessage(ctx, assistantMsg.ID, "assistant", fullResponse.String(), emptyEmbedding, time.Now()); err != nil {
+						finalErrChan <- fmt.Errorf("failed to store assistant message: %w", err)
+						return
+					}
+
+					capturedChatID := chat.ID
+					capturedMessageID := assistantMsg.ID
+					capturedContent := fullResponse.String()
+					capturedEmbedModel := chat.EmbedModel
+
+					go func() {
+						time.Sleep(500 * time.Millisecond)
+						embeddings, err := p.nexaClient.GenerateEmbeddings(context.Background(), capturedEmbedModel, []string{capturedContent})
+						if err != nil {
+							return
+						}
+						if badgerStore, ok := p.vectorStore.(*vector.BadgerStore); ok {
+							badgerStore.StoreMessageToChat(context.Background(), capturedChatID, capturedMessageID, "assistant", capturedContent, embeddings[0], time.Now())
+						}
+					}()
+
+					return
+				}
+				fullResponse.WriteString(token)
+				responseChan <- token
+
+			case err := <-errChan:
+				if err != nil {
+					finalErrChan <- err
+					return
+				}
+
+			case <-ctx.Done():
+				finalErrChan <- ctx.Err()
+				return
+			}
+		}
+	}()
+
+	return responseChan, finalErrChan, nil
 }

@@ -11,6 +11,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"rag-chat/internal/document"
 	"rag-chat/internal/rag"
 	"rag-chat/internal/vector"
 )
@@ -101,6 +102,11 @@ func (m ChatViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, func() tea.Msg {
 				return BackToChatList{}
 			}
+
+		case "ctrl+f":
+			// TODO: Show file list popup
+			// For now, just show document count in status
+			return m, nil
 
 		case "enter":
 			if !m.isThinking && m.textarea.Value() != "" {
@@ -195,7 +201,7 @@ func (m ChatViewModel) View() string {
 	b.WriteString(m.textarea.View() + "\n\n")
 
 	// Help text
-	helpText := "Enter: Send • Esc: Back to List • Ctrl+X: Quit"
+	helpText := "Enter: Send • Ctrl+F: Files • Esc: Back to List • Ctrl+X: Quit"
 	b.WriteString(helpStyle.Render(helpText))
 
 	return b.String()
@@ -227,13 +233,28 @@ func (m *ChatViewModel) addUserMessage(content string) {
 
 func (m ChatViewModel) sendMessage(userMessage string) tea.Cmd {
 	return func() tea.Msg {
-		// Process message through RAG pipeline
-		streamChan, errChan, err := m.pipeline.ProcessUserMessage(m.ctx, m.chat, userMessage)
+		// Check if message contains a file/folder path
+		pathResult := document.DetectPath(userMessage)
+
+		if pathResult.ShouldProcessPath() {
+			// Extract the query (if any)
+			query := pathResult.GetFullQuery()
+
+			// Load documents through pipeline
+			streamChan, errChan, err := m.pipeline.LoadDocuments(m.ctx, m.chat, pathResult.Path, query)
+			if err != nil {
+				return ChatResponseError{Err: err}
+			}
+
+			return waitForStreamToken(streamChan, errChan)()
+		}
+
+		// No path detected, process as regular message with document support
+		streamChan, errChan, err := m.pipeline.ProcessUserMessageWithDocuments(m.ctx, m.chat, userMessage)
 		if err != nil {
 			return ChatResponseError{Err: err}
 		}
 
-		// Call waitForStreamToken as a command and execute it to get the first message
 		return waitForStreamToken(streamChan, errChan)()
 	}
 }

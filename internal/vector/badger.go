@@ -386,3 +386,271 @@ func (s *BadgerStore) Close() error {
 
 	return nil
 }
+
+// Document storage methods
+
+// StoreDocument stores a document metadata in the chat context
+func (s *BadgerStore) StoreDocument(ctx context.Context, doc *Document) error {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if s.currentDB == nil {
+		return fmt.Errorf("no chat is currently open")
+	}
+
+	data, err := json.Marshal(doc)
+	if err != nil {
+		return fmt.Errorf("failed to marshal document: %w", err)
+	}
+
+	key := fmt.Sprintf("doc:%s", doc.ID)
+	return s.currentDB.Update(func(txn *badger.Txn) error {
+		return txn.Set([]byte(key), data)
+	})
+}
+
+// StoreDocumentChunk stores a document chunk with its embedding
+func (s *BadgerStore) StoreDocumentChunk(ctx context.Context, chunk *DocumentChunk) error {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if s.currentDB == nil {
+		return fmt.Errorf("no chat is currently open")
+	}
+
+	data, err := json.Marshal(chunk)
+	if err != nil {
+		return fmt.Errorf("failed to marshal chunk: %w", err)
+	}
+
+	key := fmt.Sprintf("chunk:%s", chunk.ID)
+	return s.currentDB.Update(func(txn *badger.Txn) error {
+		return txn.Set([]byte(key), data)
+	})
+}
+
+// GetDocuments retrieves all documents for the current chat
+func (s *BadgerStore) GetDocuments(ctx context.Context) ([]Document, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if s.currentDB == nil {
+		return nil, fmt.Errorf("no chat is currently open")
+	}
+
+	var documents []Document
+	prefix := []byte("doc:")
+
+	err := s.currentDB.View(func(txn *badger.Txn) error {
+		opts := badger.DefaultIteratorOptions
+		opts.Prefix = prefix
+		it := txn.NewIterator(opts)
+		defer it.Close()
+
+		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
+			item := it.Item()
+			err := item.Value(func(val []byte) error {
+				var doc Document
+				if err := json.Unmarshal(val, &doc); err != nil {
+					return err
+				}
+				documents = append(documents, doc)
+				return nil
+			})
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to retrieve documents: %w", err)
+	}
+
+	// Sort by upload time
+	sort.Slice(documents, func(i, j int) bool {
+		return documents[i].UploadedAt.Before(documents[j].UploadedAt)
+	})
+
+	return documents, nil
+}
+
+// GetDocumentCount returns the number of documents in the current chat
+func (s *BadgerStore) GetDocumentCount(ctx context.Context) (int, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if s.currentDB == nil {
+		return 0, fmt.Errorf("no chat is currently open")
+	}
+
+	count := 0
+	prefix := []byte("doc:")
+
+	err := s.currentDB.View(func(txn *badger.Txn) error {
+		opts := badger.DefaultIteratorOptions
+		opts.Prefix = prefix
+		opts.PrefetchValues = false // Only count keys
+		it := txn.NewIterator(opts)
+		defer it.Close()
+
+		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
+			count++
+		}
+		return nil
+	})
+
+	if err != nil {
+		return 0, fmt.Errorf("failed to count documents: %w", err)
+	}
+
+	return count, nil
+}
+
+// SearchSimilarWithChunks searches for similar content including both messages and document chunks
+func (s *BadgerStore) SearchSimilarWithChunks(ctx context.Context, queryEmbedding []float32, topK int) ([]Message, []DocumentChunk, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if s.currentDB == nil {
+		return nil, nil, fmt.Errorf("no chat is currently open")
+	}
+
+	// Get messages
+	var messages []Message
+	msgPrefix := []byte("msg:")
+
+	err := s.currentDB.View(func(txn *badger.Txn) error {
+		opts := badger.DefaultIteratorOptions
+		opts.Prefix = msgPrefix
+		it := txn.NewIterator(opts)
+		defer it.Close()
+
+		for it.Seek(msgPrefix); it.ValidForPrefix(msgPrefix); it.Next() {
+			item := it.Item()
+			err := item.Value(func(val []byte) error {
+				var msg Message
+				if err := json.Unmarshal(val, &msg); err != nil {
+					return err
+				}
+				messages = append(messages, msg)
+				return nil
+			})
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to retrieve messages: %w", err)
+	}
+
+	// Get document chunks
+	var chunks []DocumentChunk
+	chunkPrefix := []byte("chunk:")
+
+	err = s.currentDB.View(func(txn *badger.Txn) error {
+		opts := badger.DefaultIteratorOptions
+		opts.Prefix = chunkPrefix
+		it := txn.NewIterator(opts)
+		defer it.Close()
+
+		for it.Seek(chunkPrefix); it.ValidForPrefix(chunkPrefix); it.Next() {
+			item := it.Item()
+			err := item.Value(func(val []byte) error {
+				var chunk DocumentChunk
+				if err := json.Unmarshal(val, &chunk); err != nil {
+					return err
+				}
+				chunks = append(chunks, chunk)
+				return nil
+			})
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to retrieve chunks: %w", err)
+	}
+
+	// Calculate similarity scores for messages
+	type scoredMessage struct {
+		message Message
+		score   float32
+	}
+
+	scoredMessages := make([]scoredMessage, 0, len(messages))
+	for _, msg := range messages {
+		if len(msg.Embedding) > 0 {
+			score := CosineSimilarity(queryEmbedding, msg.Embedding)
+			scoredMessages = append(scoredMessages, scoredMessage{message: msg, score: score})
+		}
+	}
+
+	// Calculate similarity scores for chunks
+	type scoredChunk struct {
+		chunk DocumentChunk
+		score float32
+	}
+
+	scoredChunks := make([]scoredChunk, 0, len(chunks))
+	for _, chunk := range chunks {
+		if len(chunk.Embedding) > 0 {
+			score := CosineSimilarity(queryEmbedding, chunk.Embedding)
+			scoredChunks = append(scoredChunks, scoredChunk{chunk: chunk, score: score})
+		}
+	}
+
+	// Sort both by score descending
+	sort.Slice(scoredMessages, func(i, j int) bool {
+		return scoredMessages[i].score > scoredMessages[j].score
+	})
+
+	sort.Slice(scoredChunks, func(i, j int) bool {
+		return scoredChunks[i].score > scoredChunks[j].score
+	})
+
+	// Interleave results: take top items from both, preferring higher scores
+	// Strategy: Take topK/2 from each, or adjust based on availability
+	messageCount := topK / 2
+	chunkCount := topK - messageCount
+
+	if len(scoredMessages) < messageCount {
+		// Not enough messages, allocate more to chunks
+		chunkCount += messageCount - len(scoredMessages)
+		messageCount = len(scoredMessages)
+	}
+
+	if len(scoredChunks) < chunkCount {
+		// Not enough chunks, allocate more to messages
+		messageCount += chunkCount - len(scoredChunks)
+		chunkCount = len(scoredChunks)
+	}
+
+	// Cap to available items
+	if messageCount > len(scoredMessages) {
+		messageCount = len(scoredMessages)
+	}
+	if chunkCount > len(scoredChunks) {
+		chunkCount = len(scoredChunks)
+	}
+
+	// Extract results
+	resultMessages := make([]Message, messageCount)
+	for i := 0; i < messageCount; i++ {
+		resultMessages[i] = scoredMessages[i].message
+	}
+
+	resultChunks := make([]DocumentChunk, chunkCount)
+	for i := 0; i < chunkCount; i++ {
+		resultChunks[i] = scoredChunks[i].chunk
+	}
+
+	return resultMessages, resultChunks, nil
+}
