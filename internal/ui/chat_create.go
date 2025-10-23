@@ -33,7 +33,6 @@ type ChatCreateModel struct {
 	currentField     chatCreateField
 	llmModel         string
 	embedModel       string
-	rerankModel      string
 	width            int
 	height           int
 	err              error
@@ -43,7 +42,7 @@ type ChatCreated struct {
 	Chat *vector.Chat
 }
 
-func NewChatCreateModel(llmModel, embedModel, rerankModel string, width, height int) ChatCreateModel {
+func NewChatCreateModel(llmModel, embedModel string, width, height int) ChatCreateModel {
 	nameInput := textinput.New()
 	nameInput.Placeholder = "My Awesome Chat"
 	nameInput.Focus()
@@ -66,8 +65,8 @@ func NewChatCreateModel(llmModel, embedModel, rerankModel string, width, height 
 	topKInput.CharLimit = 3
 	topKInput.Width = 10
 
-	// Enable reranking by default only if reranking model is available
-	rerankingEnabled := rerankModel != ""
+	// Enable LLM reranking by default
+	rerankingEnabled := true
 
 	return ChatCreateModel{
 		nameInput:        nameInput,
@@ -78,7 +77,6 @@ func NewChatCreateModel(llmModel, embedModel, rerankModel string, width, height 
 		currentField:     fieldName,
 		llmModel:         llmModel,
 		embedModel:       embedModel,
-		rerankModel:      rerankModel,
 		width:            width,
 		height:           height,
 	}
@@ -207,8 +205,8 @@ func (m ChatCreateModel) View() string {
 	b.WriteString(topKLabel + "\n")
 	b.WriteString(m.topKInput.View() + "\n\n")
 
-	// Reranking checkbox
-	rerankLabel := "Enable Reranking:"
+	// LLM Reranking checkbox
+	rerankLabel := "Use LLM Reranking:"
 	if m.currentField == fieldReranking {
 		rerankLabel = lipgloss.NewStyle().Foreground(lipgloss.Color("12")).Bold(true).Render(rerankLabel)
 	}
@@ -219,12 +217,8 @@ func (m ChatCreateModel) View() string {
 	b.WriteString(rerankLabel + " " + checkbox + "\n\n")
 
 	// Model info
-	rerankInfo := "None"
-	if m.rerankModel != "" {
-		rerankInfo = m.rerankModel
-	}
 	modelInfo := lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Render(
-		fmt.Sprintf("LLM: %s | Embed: %s | Rerank: %s", m.llmModel, m.embedModel, rerankInfo))
+		fmt.Sprintf("LLM: %s | Embed: %s", m.llmModel, m.embedModel))
 	b.WriteString(modelInfo + "\n\n")
 
 	helpText := "Tab/Shift+Tab: Navigate • Enter: Create • Space: Toggle • Esc: Cancel"
@@ -304,7 +298,6 @@ func (m ChatCreateModel) createChat() tea.Cmd {
 			SystemPrompt: systemPrompt,
 			LLMModel:     m.llmModel,
 			EmbedModel:   m.embedModel,
-			RerankModel:  m.rerankModel,
 			CreatedAt:    time.Now(),
 			Temperature:  temperature,
 			TopK:         topK,

@@ -2,6 +2,7 @@ package rag
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -61,12 +62,12 @@ func (p *Pipeline) ProcessUserMessage(
 		return nil, nil, fmt.Errorf("failed to search similar messages: %w", err)
 	}
 
-	// Step 4: Optional reranking
+	// Step 4: Optional LLM-based reranking
 	var contextMessages []vector.Message
-	if chat.UseReranking && chat.RerankModel != "" && len(similarMessages) > 0 {
-		contextMessages, err = p.rerankMessages(ctx, chat.RerankModel, userMessage, similarMessages, chat.TopK)
+	if chat.UseReranking && len(similarMessages) > 0 {
+		contextMessages, err = p.rerankMessagesWithLLM(ctx, chat.LLMModel, userMessage, similarMessages, chat.TopK)
 		if err != nil {
-			// Fall back to similarity-based ranking if reranking fails
+			// Fall back to similarity-based ranking if LLM reranking fails
 			contextMessages = similarMessages
 			if len(contextMessages) > chat.TopK {
 				contextMessages = contextMessages[:chat.TopK]
@@ -123,20 +124,30 @@ func (p *Pipeline) ProcessUserMessage(
 						return
 					}
 
+					// Capture chat context BEFORE launching background goroutine
+					// This prevents race conditions when user switches chats
+					capturedChatID := chat.ID
+					capturedMessageID := assistantMsg.ID
+					capturedContent := fullResponse.String()
+					capturedEmbedModel := chat.EmbedModel
+
 					// Generate embedding asynchronously in background
 					// This allows the UI to continue while embedding happens
 					go func() {
 						// Give SDK time to unload LLM before requesting embedder
 						time.Sleep(500 * time.Millisecond)
 
-						embeddings, err := p.nexaClient.GenerateEmbeddings(context.Background(), chat.EmbedModel, []string{fullResponse.String()})
+						embeddings, err := p.nexaClient.GenerateEmbeddings(context.Background(), capturedEmbedModel, []string{capturedContent})
 						if err != nil {
 							// Log error but don't fail - message is already stored
 							return
 						}
 
-						// Update message with embedding
-						p.vectorStore.StoreMessage(context.Background(), assistantMsg.ID, "assistant", fullResponse.String(), embeddings[0], time.Now())
+						// Use StoreMessageToChat to write to the SPECIFIC chat without changing current context
+						// This ensures the message goes to the correct chat even if user has switched chats
+						if badgerStore, ok := p.vectorStore.(*vector.BadgerStore); ok {
+							badgerStore.StoreMessageToChat(context.Background(), capturedChatID, capturedMessageID, "assistant", capturedContent, embeddings[0], time.Now())
+						}
 					}()
 
 					return
@@ -160,30 +171,64 @@ func (p *Pipeline) ProcessUserMessage(
 	return responseChan, finalErrChan, nil
 }
 
-func (p *Pipeline) rerankMessages(ctx context.Context, rerankModel, query string, messages []vector.Message, topK int) ([]vector.Message, error) {
+func (p *Pipeline) rerankMessagesWithLLM(ctx context.Context, llmModel, query string, messages []vector.Message, topK int) ([]vector.Message, error) {
 	if len(messages) == 0 {
 		return messages, nil
 	}
 
-	// Prepare documents for reranking
-	documents := make([]string, len(messages))
+	// Build reranking prompt
+	var promptBuilder strings.Builder
+	promptBuilder.WriteString("You are a relevance scoring system. Given a user query and a list of message pairs, ")
+	promptBuilder.WriteString("score each message's relevance to the query on a scale of 0-10.\n\n")
+	promptBuilder.WriteString(fmt.Sprintf("User Query: %s\n\n", query))
+	promptBuilder.WriteString("Messages to score:\n")
+
 	for i, msg := range messages {
-		documents[i] = fmt.Sprintf("[%s] %s", msg.Role, msg.Content)
+		promptBuilder.WriteString(fmt.Sprintf("%d. [%s]: %s\n", i+1, msg.Role, msg.Content))
 	}
 
-	// Call reranking API
-	req := nexa.RerankingRequest{
-		Model:           rerankModel,
-		Query:           query,
-		Documents:       documents,
-		BatchSize:       10,
-		Normalize:       true,
-		NormalizeMethod: "softmax",
+	promptBuilder.WriteString("\nRespond ONLY with a JSON array of scores in order, e.g., [8.5, 3.2, 9.0, ...]. ")
+	promptBuilder.WriteString("Higher scores mean more relevant to the query.")
+
+	// Call LLM for scoring
+	req := nexa.ChatCompletionRequest{
+		Model: llmModel,
+		Messages: []nexa.ChatMessage{
+			{Role: "user", Content: promptBuilder.String()},
+		},
+		Temperature: 0.1, // Low temperature for consistent scoring
+		MaxTokens:   500,
+		Stream:      false,
 	}
 
-	scores, err := p.nexaClient.Rerank(ctx, req)
+	// Use non-streaming API
+	response, err := p.nexaClient.ChatCompletionSync(ctx, req)
 	if err != nil {
-		return nil, fmt.Errorf("failed to rerank messages: %w", err)
+		return nil, fmt.Errorf("failed to get LLM reranking scores: %w", err)
+	}
+
+	// Parse JSON scores from response
+	var scores []float64
+	response = strings.TrimSpace(response)
+
+	// Extract JSON array if wrapped in markdown code blocks
+	if strings.HasPrefix(response, "```") {
+		lines := strings.Split(response, "\n")
+		for i, line := range lines {
+			if strings.HasPrefix(line, "[") {
+				response = strings.Join(lines[i:], "\n")
+				break
+			}
+		}
+		response = strings.TrimSuffix(strings.TrimSpace(response), "```")
+	}
+
+	if err := json.Unmarshal([]byte(response), &scores); err != nil {
+		return nil, fmt.Errorf("failed to parse LLM scores: %w (response: %s)", err, response)
+	}
+
+	if len(scores) != len(messages) {
+		return nil, fmt.Errorf("LLM returned %d scores but expected %d", len(scores), len(messages))
 	}
 
 	// Create scored message pairs
@@ -194,14 +239,10 @@ func (p *Pipeline) rerankMessages(ctx context.Context, rerankModel, query string
 
 	scored := make([]scoredMessage, len(messages))
 	for i, msg := range messages {
-		score := 0.0
-		if i < len(scores) {
-			score = scores[i]
-		}
-		scored[i] = scoredMessage{message: msg, score: score}
+		scored[i] = scoredMessage{message: msg, score: scores[i]}
 	}
 
-	// Sort by reranking score descending
+	// Sort by score descending
 	sort.Slice(scored, func(i, j int) bool {
 		return scored[i].score > scored[j].score
 	})
@@ -223,11 +264,11 @@ func (p *Pipeline) buildPromptWithContext(systemPrompt string, contextMessages [
 	var builder strings.Builder
 
 	if len(contextMessages) > 0 {
-		builder.WriteString("Previous relevant conversations:\n\n")
-		for _, msg := range contextMessages {
-			builder.WriteString(fmt.Sprintf("[%s]: %s\n", msg.Role, msg.Content))
+		builder.WriteString("Context from previous conversations (all relevant):\n\n")
+		for i, msg := range contextMessages {
+			builder.WriteString(fmt.Sprintf("%d. [%s]: %s\n", i+1, msg.Role, msg.Content))
 		}
-		builder.WriteString("\n")
+		builder.WriteString("\nUse information from all conversations above to answer.\n\n")
 	}
 
 	builder.WriteString("Current message: ")

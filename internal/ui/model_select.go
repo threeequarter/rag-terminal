@@ -15,21 +15,18 @@ type modelSelectState int
 const (
 	selectingLLM modelSelectState = iota
 	selectingEmbedding
-	selectingReranking
 )
 
 type ModelSelectModel struct {
-	list           list.Model
-	llmModels      []nexa.Model
-	embedModels    []nexa.Model
-	rerankModels   []nexa.Model
-	state          modelSelectState
-	selectedLLM    string
-	selectedEmbed  string
-	selectedRerank string
-	width          int
-	height         int
-	err            error
+	list          list.Model
+	llmModels     []nexa.Model
+	embedModels   []nexa.Model
+	state         modelSelectState
+	selectedLLM   string
+	selectedEmbed string
+	width         int
+	height        int
+	err           error
 }
 
 type modelItem struct {
@@ -41,21 +38,18 @@ func (i modelItem) Description() string { return fmt.Sprintf("Type: %s", i.model
 func (i modelItem) FilterValue() string { return i.model.Name }
 
 type ModelSelectionComplete struct {
-	LLMModel    string
-	EmbedModel  string
-	RerankModel string
+	LLMModel   string
+	EmbedModel string
 }
 
 func NewModelSelectModel(models []nexa.Model, width, height int) ModelSelectModel {
 	// Separate models by type
-	var llmModels, embedModels, rerankModels []nexa.Model
+	var llmModels, embedModels []nexa.Model
 	for _, m := range models {
 		if m.Type == "text-generation" {
 			llmModels = append(llmModels, m)
 		} else if m.Type == "embeddings" {
 			embedModels = append(embedModels, m)
-		} else if m.Type == "reranking" {
-			rerankModels = append(rerankModels, m)
 		}
 	}
 
@@ -71,13 +65,12 @@ func NewModelSelectModel(models []nexa.Model, width, height int) ModelSelectMode
 	l.SetFilteringEnabled(true)
 
 	return ModelSelectModel{
-		list:         l,
-		llmModels:    llmModels,
-		embedModels:  embedModels,
-		rerankModels: rerankModels,
-		state:        selectingLLM,
-		width:        width,
-		height:       height,
+		list:        l,
+		llmModels:   llmModels,
+		embedModels: embedModels,
+		state:       selectingLLM,
+		width:       width,
+		height:      height,
 	}
 }
 
@@ -118,49 +111,12 @@ func (m ModelSelectModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.list.Title = "Select Embedding Model"
 				return m, nil
 			} else if m.state == selectingEmbedding {
-				// Save embedding selection and move to reranking selection
+				// Save embedding selection and complete
 				m.selectedEmbed = selectedItem.(modelItem).model.Name
-				m.state = selectingReranking
-
-				// Update list with reranking models (if any)
-				if len(m.rerankModels) > 0 {
-					items := make([]list.Item, len(m.rerankModels))
-					for i, model := range m.rerankModels {
-						items[i] = modelItem{model: model}
-					}
-					m.list.SetItems(items)
-					m.list.Title = "Select Reranking Model (or press S to skip)"
-				} else {
-					// No reranking models available, complete without reranking
-					return m, func() tea.Msg {
-						return ModelSelectionComplete{
-							LLMModel:    m.selectedLLM,
-							EmbedModel:  m.selectedEmbed,
-							RerankModel: "",
-						}
-					}
-				}
-				return m, nil
-			} else {
-				// Save reranking selection and complete
-				m.selectedRerank = selectedItem.(modelItem).model.Name
 				return m, func() tea.Msg {
 					return ModelSelectionComplete{
-						LLMModel:    m.selectedLLM,
-						EmbedModel:  m.selectedEmbed,
-						RerankModel: m.selectedRerank,
-					}
-				}
-			}
-
-		case "s", "S":
-			// Skip reranking selection
-			if m.state == selectingReranking {
-				return m, func() tea.Msg {
-					return ModelSelectionComplete{
-						LLMModel:    m.selectedLLM,
-						EmbedModel:  m.selectedEmbed,
-						RerankModel: "",
+						LLMModel:   m.selectedLLM,
+						EmbedModel: m.selectedEmbed,
 					}
 				}
 			}
@@ -175,16 +131,6 @@ func (m ModelSelectModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				m.list.SetItems(items)
 				m.list.Title = "Select LLM Model"
-				return m, nil
-			} else if m.state == selectingReranking {
-				// Go back to embedding selection
-				m.state = selectingEmbedding
-				items := make([]list.Item, len(m.embedModels))
-				for i, model := range m.embedModels {
-					items[i] = modelItem{model: model}
-				}
-				m.list.SetItems(items)
-				m.list.Title = "Select Embedding Model"
 				return m, nil
 			}
 		}
@@ -203,8 +149,6 @@ func (m ModelSelectModel) View() string {
 	helpText := "↑/↓: Navigate • Enter: Select • Esc: Back • Ctrl+X: Quit"
 	if m.state == selectingLLM {
 		helpText = "↑/↓: Navigate • Enter: Select • Ctrl+X: Quit"
-	} else if m.state == selectingReranking {
-		helpText = "↑/↓: Navigate • Enter: Select • S: Skip • Esc: Back • Ctrl+X: Quit"
 	}
 
 	var status string

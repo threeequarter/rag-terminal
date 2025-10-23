@@ -37,9 +37,8 @@ type model struct {
 	chatViewModel    ui.ChatViewModel
 
 	// Selected models
-	llmModel    string
-	embedModel  string
-	rerankModel string
+	llmModel   string
+	embedModel string
 
 	// Current chat
 	currentChat *vector.Chat
@@ -147,7 +146,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Transition to chat list
 		m.llmModel = msg.LLMModel
 		m.embedModel = msg.EmbedModel
-		m.rerankModel = msg.RerankModel
 		m.pipeline = rag.NewPipeline(m.nexaClient, m.vectorStore)
 
 		chats, err := m.vectorStore.ListChats(context.Background())
@@ -163,7 +161,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case ui.CreateNewChat:
 		// Transition to chat create
 		m.state = stateChatCreate
-		m.chatCreateModel = ui.NewChatCreateModel(m.llmModel, m.embedModel, m.rerankModel, m.width, m.height)
+		m.chatCreateModel = ui.NewChatCreateModel(m.llmModel, m.embedModel, m.width, m.height)
 		return m, m.chatCreateModel.Init()
 
 	case ui.ChatCreated:

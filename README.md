@@ -6,12 +6,12 @@ A Go-based RAG (Retrieval-Augmented Generation) chat application with a Bubblete
 
 - **Interactive TUI**: Built with Bubbletea for a clean terminal interface
 - **RAG Pipeline**: Retrieval-Augmented Generation with vector similarity search
-- **Vector Storage**: BadgerDB for efficient message and embedding storage
+- **LLM-based Reranking**: Uses LLM to score and rerank retrieved context for better relevance
+- **Database-per-Chat**: Isolated vector storage for each chat conversation
+- **Streaming Responses**: Real-time streaming of AI responses
 - **Model Selection**: Choose from available LLM and embedding models
 - **Chat Management**: Create, list, and delete chat conversations
-- **Streaming Responses**: Real-time streaming of AI responses
-- **Optional Reranking**: Improve retrieval quality with reranking models
-- **Persistent Storage**: All chats and messages stored locally
+- **Persistent Storage**: All chats and messages stored locally in BadgerDB
 
 ## Architecture
 
@@ -19,24 +19,25 @@ A Go-based RAG (Retrieval-Augmented Generation) chat application with a Bubblete
 
 - **Nexa API Client** (`internal/nexa/`): HTTP client for Nexa SDK API
   - Embeddings generation
-  - Chat completions with streaming
-  - Document reranking
+  - Chat completions (streaming and synchronous)
 
 - **Vector Storage** (`internal/vector/`): BadgerDB-based vector database
+  - Separate database per chat (database-per-chat pattern)
   - Message storage with embeddings
   - Cosine similarity search
   - Chat metadata management
 
 - **RAG Pipeline** (`internal/rag/`): Orchestrates the RAG flow
   - Embedding generation for queries
-  - Vector similarity search
-  - Optional reranking
-  - Context injection into prompts
+  - Vector similarity search (top-K × 2 when reranking enabled)
+  - LLM-based reranking (scores 0-10 per message)
+  - Context injection into prompts with numbered conversations
+  - Asynchronous embedding updates to prevent blocking
 
 - **UI Components** (`internal/ui/`): Bubbletea TUI screens
-  - Model selection screen
-  - Chat list screen
-  - Chat creation form
+  - Model selection (LLM and embedding)
+  - Chat list management
+  - Chat creation with RAG parameters
   - Chat conversation view
 
 ## Prerequisites
@@ -88,90 +89,78 @@ A Go-based RAG (Retrieval-Augmented Generation) chat application with a Bubblete
    ```
 
 2. **Select Models**:
-   - Use arrow keys to navigate
-   - First, select an LLM model (text-generation)
-   - Then, select an embedding model (embeddings)
-   - Press Enter to confirm each selection
+   - Select an LLM model (used for both generation and reranking)
+   - Select an embedding model (for vector search)
 
-3. **Chat List Screen**:
-   - View all your chat conversations
-   - **N**: Create a new chat
-   - **Enter**: Open selected chat
-   - **D**: Delete selected chat
-   - **Ctrl+X**: Exit application
+3. **Create or Open Chat**:
+   - **Chat Name**: Name your conversation
+   - **System Prompt**: Define AI behavior
+   - **Temperature**: Response randomness (0-1, default: 0.7)
+   - **Top K**: Context messages to retrieve (default: 5)
+   - **Use LLM Reranking**: Enabled by default - LLM scores retrieved messages for relevance
 
-4. **Create Chat Screen**:
-   - **Chat Name**: Enter a name for your chat
-   - **System Prompt**: Define the AI assistant's behavior
-   - **Temperature**: Set creativity (0-1, default: 0.7)
-   - **Top K**: Number of similar messages to retrieve (default: 5)
-   - **Reranking**: Enable/disable reranking (default: enabled)
-   - **Tab**: Navigate between fields
-   - **Enter**: Create and start chat
-   - **Esc**: Cancel and return to chat list
-
-5. **Chat Conversation Screen**:
-   - Type your message in the input area
-   - **Enter**: Send message
-   - The AI will respond with streaming output
-   - Previous messages are automatically stored and used for context
-   - **Esc**: Return to chat list
-   - **Ctrl+X**: Exit application
+4. **Chat Workflow**:
+   - Send message → generates embedding → searches similar messages
+   - If reranking enabled: retrieves top-K × 2, LLM scores each, takes top-K
+   - If reranking disabled: uses cosine similarity ranking
+   - Context injected as numbered conversations
+   - LLM generates response with full context
+   - Both user and assistant messages stored with embeddings
 
 ## RAG Flow
 
-1. **User sends message** → Generate embedding for the message
-2. **Vector search** → Find top-K similar messages from history
-3. **Optional reranking** → Rerank results for better relevance
-4. **Context injection** → Inject retrieved messages into prompt
-5. **LLM generation** → Generate response with context
-6. **Storage** → Store both user message and AI response with embeddings
+1. **User Message** → Generate embedding with embedding model
+2. **Vector Search** → Cosine similarity search in current chat's database (retrieves top-K × 2 if reranking enabled)
+3. **LLM Reranking** (optional, enabled by default):
+   - LLM scores each message 0-10 for relevance to user query
+   - Sorts by score, selects top-K most relevant
+   - Falls back to cosine similarity if reranking fails
+4. **Context Injection** → Build prompt with numbered conversations: "Context from previous conversations (all relevant):"
+5. **LLM Generation** → Stream response using context
+6. **Storage** → Store user message immediately, assistant message stored with empty embedding first, then updated asynchronously (500ms delay to avoid model switching conflicts)
 
 ## Configuration
 
 ### Default Settings
 
-- **Database Path**: `~/.rag-chat/db/`
+- **Database Path**: `~/.rag-chat/db/<chat-id>/` (separate database per chat)
 - **Nexa API URL**: `http://127.0.0.1:18181`
-- **Default Temperature**: 0.7
-- **Default Top K**: 5
+- **Temperature**: 0.7
+- **Top K**: 5
 - **Max Tokens**: 2048
-- **Reranking**: Enabled by default
+- **LLM Reranking**: Enabled by default
 
 ### RAG Parameters
 
-Customize these when creating a chat:
-
-- **Temperature**: Controls response randomness (0.0 = deterministic, 1.0 = creative)
-- **Top K**: Number of similar messages to retrieve for context
-- **Reranking**: Improves relevance of retrieved messages
-- **System Prompt**: Defines the AI's personality and behavior
+- **Temperature**: Response randomness (0.0 = deterministic, 1.0 = creative)
+- **Top K**: Number of context messages to retrieve
+- **Use LLM Reranking**: When enabled, LLM scores each retrieved message for relevance (temperature 0.1 for consistency)
+- **System Prompt**: AI personality and behavior
 
 ## Project Structure
 
 ```
 rag-chat/
-├── main.go                     # Application entry point
+├── main.go                     # Application entry point & state management
 ├── internal/
 │   ├── nexa/                   # Nexa API client
 │   │   ├── client.go          # HTTP client
 │   │   ├── embeddings.go      # Embeddings API
-│   │   ├── chat.go            # Chat completions API
-│   │   └── reranking.go       # Reranking API
+│   │   └── chat.go            # Chat completions (streaming & sync)
 │   ├── vector/                 # Vector storage
-│   │   ├── store.go           # Storage interface
-│   │   ├── badger.go          # BadgerDB implementation
+│   │   ├── store.go           # Storage interface & Chat struct
+│   │   ├── badger.go          # BadgerDB with database-per-chat
 │   │   └── similarity.go      # Cosine similarity
 │   ├── rag/                    # RAG pipeline
-│   │   └── pipeline.go        # RAG orchestration
+│   │   └── pipeline.go        # RAG orchestration & LLM reranking
 │   ├── models/                 # Data models
 │   │   ├── chat.go            # Chat metadata
 │   │   └── message.go         # Message structure
 │   └── ui/                     # TUI components
-│       ├── model_select.go    # Model selection
-│       ├── chat_list.go       # Chat list
-│       ├── chat_create.go     # Chat creation
-│       └── chat_view.go       # Chat conversation
+│       ├── model_select.go    # Model selection (LLM & embedding)
+│       ├── chat_list.go       # Chat list management
+│       ├── chat_create.go     # Chat creation form
+│       └── chat_view.go       # Chat conversation view
 └── go.mod
 ```
 
@@ -184,24 +173,23 @@ rag-chat/
 ### Model Selection
 - **↑/↓**: Navigate models
 - **Enter**: Select model
-- **Esc**: Go back (when selecting embedding model)
+- **Esc**: Go back
 
 ### Chat List
 - **↑/↓**: Navigate chats
 - **Enter**: Open chat
-- **N** or **Ctrl+N**: Create new chat
-- **D** or **Ctrl+D**: Delete selected chat
+- **N**: Create new chat
+- **D**: Delete selected chat
 
 ### Chat Creation
 - **Tab/Shift+Tab**: Navigate fields
-- **Enter**: Create chat (or new line in system prompt)
-- **Space**: Toggle reranking checkbox
+- **Enter**: Create chat
+- **Space**: Toggle "Use LLM Reranking"
 - **Esc**: Cancel
 
 ### Chat Conversation
 - **Enter**: Send message
 - **Esc**: Return to chat list
-- **↑/↓**: Scroll message history
 
 ## Troubleshooting
 
@@ -211,9 +199,9 @@ rag-chat/
 - Verify Nexa server is running: Check http://127.0.0.1:18181
 
 ### "Failed to open badger database"
-- Check that `~/.rag-chat/db/` directory is accessible
-- Ensure no other instance is running
-- Try deleting the database directory to start fresh
+- Check that `~/.rag-chat/db/<chat-id>/` directory is accessible
+- Ensure no other instance is accessing the same chat
+- Close chat properly before opening another to avoid database locks
 
 ### "Embeddings API returned status 500"
 - Ensure the embedding model is loaded in Nexa
@@ -257,9 +245,8 @@ go test -race ./...
 
 The application uses the following Nexa SDK endpoints:
 
-1. **POST /v1/embeddings**: Generate text embeddings
-2. **POST /v1/chat/completions**: Generate chat responses (streaming)
-3. **POST /v1/reranking**: Rerank documents by relevance
+1. **POST /v1/embeddings**: Generate text embeddings for messages
+2. **POST /v1/chat/completions**: Generate chat responses (streaming for user interaction, synchronous for LLM reranking)
 
 ## Credits
 

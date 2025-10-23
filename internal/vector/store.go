@@ -53,12 +53,11 @@ type Chat struct {
 	SystemPrompt string
 	LLMModel     string
 	EmbedModel   string
-	RerankModel  string
 	CreatedAt    time.Time
 
 	// RAG parameters
 	Temperature  float64
 	TopK         int
-	UseReranking bool
+	UseReranking bool // When true, uses LLM-based reranking
 	MaxTokens    int
 }

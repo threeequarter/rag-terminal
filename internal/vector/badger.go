@@ -334,6 +334,44 @@ func (s *BadgerStore) DeleteChat(ctx context.Context, chatID string) error {
 	return nil
 }
 
+// StoreMessageToChat stores a message to a specific chat without changing the current context
+// This is useful for background operations that shouldn't interfere with the active chat
+func (s *BadgerStore) StoreMessageToChat(ctx context.Context, chatID, messageID, role, content string, embedding []float32, timestamp time.Time) error {
+	// Open a separate database connection for this specific chat
+	chatDBPath := filepath.Join(s.baseDir, chatID, "messages.db")
+	if err := os.MkdirAll(filepath.Dir(chatDBPath), 0755); err != nil {
+		return fmt.Errorf("failed to create chat directory: %w", err)
+	}
+
+	opts := badger.DefaultOptions(chatDBPath)
+	opts.Logger = nil // Disable logging
+
+	db, err := badger.Open(opts)
+	if err != nil {
+		return fmt.Errorf("failed to open chat database: %w", err)
+	}
+	defer db.Close()
+
+	msg := Message{
+		ID:        messageID,
+		ChatID:    chatID,
+		Role:      role,
+		Content:   content,
+		Embedding: embedding,
+		Timestamp: timestamp,
+	}
+
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return fmt.Errorf("failed to marshal message: %w", err)
+	}
+
+	key := fmt.Sprintf("msg:%s", messageID)
+	return db.Update(func(txn *badger.Txn) error {
+		return txn.Set([]byte(key), data)
+	})
+}
+
 func (s *BadgerStore) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

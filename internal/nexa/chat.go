@@ -112,3 +112,29 @@ func (c *Client) ChatCompletion(ctx context.Context, req ChatCompletionRequest) 
 
 	return streamChan, errChan, nil
 }
+
+func (c *Client) ChatCompletionSync(ctx context.Context, req ChatCompletionRequest) (string, error) {
+	req.Stream = false
+
+	resp, err := c.doRequest(ctx, "POST", "/v1/chat/completions", req)
+	if err != nil {
+		return "", fmt.Errorf("failed to make chat completion request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("chat completion API returned status %d: %s", resp.StatusCode, string(body))
+	}
+
+	var completionResp ChatCompletionResponse
+	if err := json.NewDecoder(resp.Body).Decode(&completionResp); err != nil {
+		return "", fmt.Errorf("failed to decode chat completion response: %w", err)
+	}
+
+	if len(completionResp.Choices) == 0 {
+		return "", fmt.Errorf("no choices returned in chat completion response")
+	}
+
+	return completionResp.Choices[0].Message.Content, nil
+}
