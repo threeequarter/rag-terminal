@@ -233,8 +233,8 @@ func (m ChatViewModel) sendMessage(userMessage string) tea.Cmd {
 			return ChatResponseError{Err: err}
 		}
 
-		// Return a command that waits for the next token
-		return waitForStreamToken(streamChan, errChan)
+		// Call waitForStreamToken as a command and execute it to get the first message
+		return waitForStreamToken(streamChan, errChan)()
 	}
 }
 

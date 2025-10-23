@@ -74,15 +74,19 @@ func (c *Client) ChatCompletion(ctx context.Context, req ChatCompletionRequest) 
 			}
 
 			line = strings.TrimSpace(line)
-			if line == "" || line == "data: [DONE]" {
+			if line == "" {
 				continue
 			}
 
-			if !strings.HasPrefix(line, "data: ") {
+			if line == "data:[DONE]" {
+				return
+			}
+
+			if !strings.HasPrefix(line, "data:") {
 				continue
 			}
 
-			jsonData := strings.TrimPrefix(line, "data: ")
+			jsonData := strings.TrimPrefix(line, "data:")
 			var streamResp ChatCompletionResponse
 			if err := json.Unmarshal([]byte(jsonData), &streamResp); err != nil {
 				errChan <- fmt.Errorf("failed to decode stream response: %w", err)
