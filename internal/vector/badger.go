@@ -4,33 +4,92 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
-	"strings"
+	"sync"
 	"time"
 
 	"github.com/dgraph-io/badger/v4"
 )
 
 type BadgerStore struct {
-	db *badger.DB
+	baseDir      string
+	currentChatID string
+	currentDB    *badger.DB
+	mu           sync.RWMutex
 }
 
-func NewBadgerStore(dbPath string) (*BadgerStore, error) {
-	opts := badger.DefaultOptions(dbPath)
+func NewBadgerStore(baseDir string) (*BadgerStore, error) {
+	if err := os.MkdirAll(baseDir, 0755); err != nil {
+		return nil, fmt.Errorf("failed to create base directory: %w", err)
+	}
+
+	return &BadgerStore{
+		baseDir: baseDir,
+	}, nil
+}
+
+func (s *BadgerStore) OpenChat(ctx context.Context, chatID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Close existing chat if open
+	if s.currentDB != nil {
+		if err := s.currentDB.Close(); err != nil {
+			return fmt.Errorf("failed to close current chat database: %w", err)
+		}
+		s.currentDB = nil
+		s.currentChatID = ""
+	}
+
+	// Open database for the specified chat
+	chatDBPath := filepath.Join(s.baseDir, chatID, "messages.db")
+	if err := os.MkdirAll(filepath.Dir(chatDBPath), 0755); err != nil {
+		return fmt.Errorf("failed to create chat directory: %w", err)
+	}
+
+	opts := badger.DefaultOptions(chatDBPath)
 	opts.Logger = nil // Disable logging
 
 	db, err := badger.Open(opts)
 	if err != nil {
-		return nil, fmt.Errorf("failed to open badger database: %w", err)
+		return fmt.Errorf("failed to open chat database: %w", err)
 	}
 
-	return &BadgerStore{db: db}, nil
+	s.currentDB = db
+	s.currentChatID = chatID
+	return nil
 }
 
-func (s *BadgerStore) StoreMessage(ctx context.Context, chatID, messageID, role, content string, embedding []float32, timestamp time.Time) error {
+func (s *BadgerStore) CloseChat(ctx context.Context) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.currentDB == nil {
+		return nil // No chat open
+	}
+
+	if err := s.currentDB.Close(); err != nil {
+		return fmt.Errorf("failed to close chat database: %w", err)
+	}
+
+	s.currentDB = nil
+	s.currentChatID = ""
+	return nil
+}
+
+func (s *BadgerStore) StoreMessage(ctx context.Context, messageID, role, content string, embedding []float32, timestamp time.Time) error {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if s.currentDB == nil {
+		return fmt.Errorf("no chat is currently open")
+	}
+
 	msg := Message{
 		ID:        messageID,
-		ChatID:    chatID,
+		ChatID:    s.currentChatID,
 		Role:      role,
 		Content:   content,
 		Embedding: embedding,
@@ -42,17 +101,24 @@ func (s *BadgerStore) StoreMessage(ctx context.Context, chatID, messageID, role,
 		return fmt.Errorf("failed to marshal message: %w", err)
 	}
 
-	key := fmt.Sprintf("chat:%s:msg:%s", chatID, messageID)
-	return s.db.Update(func(txn *badger.Txn) error {
+	key := fmt.Sprintf("msg:%s", messageID)
+	return s.currentDB.Update(func(txn *badger.Txn) error {
 		return txn.Set([]byte(key), data)
 	})
 }
 
-func (s *BadgerStore) SearchSimilar(ctx context.Context, chatID string, queryEmbedding []float32, topK int) ([]Message, error) {
-	var messages []Message
-	prefix := []byte(fmt.Sprintf("chat:%s:msg:", chatID))
+func (s *BadgerStore) SearchSimilar(ctx context.Context, queryEmbedding []float32, topK int) ([]Message, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 
-	err := s.db.View(func(txn *badger.Txn) error {
+	if s.currentDB == nil {
+		return nil, fmt.Errorf("no chat is currently open")
+	}
+
+	var messages []Message
+	prefix := []byte("msg:")
+
+	err := s.currentDB.View(func(txn *badger.Txn) error {
 		opts := badger.DefaultIteratorOptions
 		opts.Prefix = prefix
 		it := txn.NewIterator(opts)
@@ -111,11 +177,18 @@ func (s *BadgerStore) SearchSimilar(ctx context.Context, chatID string, queryEmb
 	return result, nil
 }
 
-func (s *BadgerStore) GetMessages(ctx context.Context, chatID string) ([]Message, error) {
-	var messages []Message
-	prefix := []byte(fmt.Sprintf("chat:%s:msg:", chatID))
+func (s *BadgerStore) GetMessages(ctx context.Context) ([]Message, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 
-	err := s.db.View(func(txn *badger.Txn) error {
+	if s.currentDB == nil {
+		return nil, fmt.Errorf("no chat is currently open")
+	}
+
+	var messages []Message
+	prefix := []byte("msg:")
+
+	err := s.currentDB.View(func(txn *badger.Txn) error {
 		opts := badger.DefaultIteratorOptions
 		opts.Prefix = prefix
 		it := txn.NewIterator(opts)
@@ -151,71 +224,84 @@ func (s *BadgerStore) GetMessages(ctx context.Context, chatID string) ([]Message
 }
 
 func (s *BadgerStore) StoreChat(ctx context.Context, chat *Chat) error {
-	data, err := json.Marshal(chat)
-	if err != nil {
-		return fmt.Errorf("failed to marshal chat: %w", err)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Create chat directory
+	chatDir := filepath.Join(s.baseDir, chat.ID)
+	if err := os.MkdirAll(chatDir, 0755); err != nil {
+		return fmt.Errorf("failed to create chat directory: %w", err)
 	}
 
-	key := fmt.Sprintf("metadata:chat:%s", chat.ID)
-	return s.db.Update(func(txn *badger.Txn) error {
-		return txn.Set([]byte(key), data)
-	})
+	// Store chat metadata as JSON file
+	metadataPath := filepath.Join(chatDir, "metadata.json")
+	data, err := json.Marshal(chat)
+	if err != nil {
+		return fmt.Errorf("failed to marshal chat metadata: %w", err)
+	}
+
+	if err := os.WriteFile(metadataPath, data, 0644); err != nil {
+		return fmt.Errorf("failed to write chat metadata: %w", err)
+	}
+
+	return nil
 }
 
 func (s *BadgerStore) GetChat(ctx context.Context, chatID string) (*Chat, error) {
-	var chat Chat
-	key := []byte(fmt.Sprintf("metadata:chat:%s", chatID))
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 
-	err := s.db.View(func(txn *badger.Txn) error {
-		item, err := txn.Get(key)
-		if err != nil {
-			return err
-		}
-
-		return item.Value(func(val []byte) error {
-			return json.Unmarshal(val, &chat)
-		})
-	})
-
+	metadataPath := filepath.Join(s.baseDir, chatID, "metadata.json")
+	data, err := os.ReadFile(metadataPath)
 	if err != nil {
-		if err == badger.ErrKeyNotFound {
+		if os.IsNotExist(err) {
 			return nil, fmt.Errorf("chat not found")
 		}
-		return nil, fmt.Errorf("failed to retrieve chat: %w", err)
+		return nil, fmt.Errorf("failed to read chat metadata: %w", err)
+	}
+
+	var chat Chat
+	if err := json.Unmarshal(data, &chat); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal chat metadata: %w", err)
 	}
 
 	return &chat, nil
 }
 
 func (s *BadgerStore) ListChats(ctx context.Context) ([]Chat, error) {
-	var chats []Chat
-	prefix := []byte("metadata:chat:")
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 
-	err := s.db.View(func(txn *badger.Txn) error {
-		opts := badger.DefaultIteratorOptions
-		opts.Prefix = prefix
-		it := txn.NewIterator(opts)
-		defer it.Close()
-
-		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
-			item := it.Item()
-			err := item.Value(func(val []byte) error {
-				var chat Chat
-				if err := json.Unmarshal(val, &chat); err != nil {
-					return err
-				}
-				chats = append(chats, chat)
-				return nil
-			})
-			if err != nil {
-				return err
-			}
-		}
-		return nil
-	})
-
+	entries, err := os.ReadDir(s.baseDir)
 	if err != nil {
-		return nil, fmt.Errorf("failed to list chats: %w", err)
+		if os.IsNotExist(err) {
+			return []Chat{}, nil
+		}
+		return nil, fmt.Errorf("failed to read base directory: %w", err)
+	}
+
+	var chats []Chat
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+
+		chatID := entry.Name()
+		metadataPath := filepath.Join(s.baseDir, chatID, "metadata.json")
+
+		data, err := os.ReadFile(metadataPath)
+		if err != nil {
+			// Skip directories without metadata
+			continue
+		}
+
+		var chat Chat
+		if err := json.Unmarshal(data, &chat); err != nil {
+			// Skip invalid metadata files
+			continue
+		}
+
+		chats = append(chats, chat)
 	}
 
 	// Sort by creation date descending
@@ -227,58 +313,38 @@ func (s *BadgerStore) ListChats(ctx context.Context) ([]Chat, error) {
 }
 
 func (s *BadgerStore) DeleteChat(ctx context.Context, chatID string) error {
-	return s.db.Update(func(txn *badger.Txn) error {
-		// Delete chat metadata
-		chatKey := []byte(fmt.Sprintf("metadata:chat:%s", chatID))
-		if err := txn.Delete(chatKey); err != nil && err != badger.ErrKeyNotFound {
-			return fmt.Errorf("failed to delete chat metadata: %w", err)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Close database if this is the currently open chat
+	if s.currentChatID == chatID && s.currentDB != nil {
+		if err := s.currentDB.Close(); err != nil {
+			return fmt.Errorf("failed to close database before deletion: %w", err)
 		}
+		s.currentDB = nil
+		s.currentChatID = ""
+	}
 
-		// Delete all messages for this chat
-		prefix := []byte(fmt.Sprintf("chat:%s:msg:", chatID))
-		opts := badger.DefaultIteratorOptions
-		opts.Prefix = prefix
-		it := txn.NewIterator(opts)
-		defer it.Close()
+	// Remove entire chat directory
+	chatDir := filepath.Join(s.baseDir, chatID)
+	if err := os.RemoveAll(chatDir); err != nil {
+		return fmt.Errorf("failed to delete chat directory: %w", err)
+	}
 
-		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
-			key := it.Item().KeyCopy(nil)
-			if err := txn.Delete(key); err != nil {
-				return fmt.Errorf("failed to delete message: %w", err)
-			}
-		}
-
-		return nil
-	})
+	return nil
 }
 
 func (s *BadgerStore) Close() error {
-	return s.db.Close()
-}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
-// Helper function to list all keys with a prefix (useful for debugging)
-func (s *BadgerStore) listKeys(prefix string) ([]string, error) {
-	var keys []string
-	prefixBytes := []byte(prefix)
-
-	err := s.db.View(func(txn *badger.Txn) error {
-		opts := badger.DefaultIteratorOptions
-		opts.PrefetchValues = false
-		if prefix != "" {
-			opts.Prefix = prefixBytes
+	if s.currentDB != nil {
+		if err := s.currentDB.Close(); err != nil {
+			return fmt.Errorf("failed to close database: %w", err)
 		}
-		it := txn.NewIterator(opts)
-		defer it.Close()
+		s.currentDB = nil
+		s.currentChatID = ""
+	}
 
-		for it.Seek(prefixBytes); it.ValidForPrefix(prefixBytes); it.Next() {
-			key := string(it.Item().KeyCopy(nil))
-			// Remove internal badger keys
-			if !strings.HasPrefix(key, "!badger!") {
-				keys = append(keys, key)
-			}
-		}
-		return nil
-	})
-
-	return keys, err
+	return nil
 }

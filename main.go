@@ -173,12 +173,24 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		}
 
+		// Open the chat database
+		if err := m.vectorStore.OpenChat(context.Background(), msg.Chat.ID); err != nil {
+			m.err = err
+			return m, tea.Quit
+		}
+
 		m.currentChat = msg.Chat
 		m.state = stateChatView
 		m.chatViewModel = ui.NewChatViewModel(msg.Chat, m.pipeline, m.vectorStore, m.width, m.height)
 		return m, m.chatViewModel.Init()
 
 	case ui.ChatSelected:
+		// Open the chat database
+		if err := m.vectorStore.OpenChat(context.Background(), msg.Chat.ID); err != nil {
+			m.err = err
+			return m, tea.Quit
+		}
+
 		// Transition to chat view
 		m.currentChat = &msg.Chat
 		m.state = stateChatView
@@ -202,6 +214,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case ui.BackToChatList:
+		// Close current chat database
+		if err := m.vectorStore.CloseChat(context.Background()); err != nil {
+			m.err = err
+			return m, tea.Quit
+		}
+
 		// Transition back to chat list
 		chats, err := m.vectorStore.ListChats(context.Background())
 		if err != nil {

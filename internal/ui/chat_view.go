@@ -266,7 +266,7 @@ func waitForStreamToken(streamChan <-chan string, errChan <-chan error) tea.Cmd 
 
 func (m ChatViewModel) loadMessages() tea.Cmd {
 	return func() tea.Msg {
-		messages, err := m.vectorStore.GetMessages(context.Background(), m.chat.ID)
+		messages, err := m.vectorStore.GetMessages(context.Background())
 		if err != nil {
 			return ChatResponseError{Err: err}
 		}

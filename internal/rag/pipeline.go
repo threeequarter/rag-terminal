@@ -46,7 +46,7 @@ func (p *Pipeline) ProcessUserMessage(
 
 	// Step 2: Store user message
 	userMsg := models.NewMessage(chat.ID, "user", userMessage)
-	if err := p.vectorStore.StoreMessage(ctx, chat.ID, userMsg.ID, "user", userMessage, userEmbedding, time.Now()); err != nil {
+	if err := p.vectorStore.StoreMessage(ctx, userMsg.ID, "user", userMessage, userEmbedding, time.Now()); err != nil {
 		return nil, nil, fmt.Errorf("failed to store user message: %w", err)
 	}
 
@@ -56,7 +56,7 @@ func (p *Pipeline) ProcessUserMessage(
 		retrievalTopK = chat.TopK
 	}
 
-	similarMessages, err := p.vectorStore.SearchSimilar(ctx, chat.ID, userEmbedding, retrievalTopK)
+	similarMessages, err := p.vectorStore.SearchSimilar(ctx, userEmbedding, retrievalTopK)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to search similar messages: %w", err)
 	}
@@ -118,7 +118,7 @@ func (p *Pipeline) ProcessUserMessage(
 
 					// Store with empty embedding first
 					emptyEmbedding := make([]float32, 0)
-					if err := p.vectorStore.StoreMessage(ctx, chat.ID, assistantMsg.ID, "assistant", fullResponse.String(), emptyEmbedding, time.Now()); err != nil {
+					if err := p.vectorStore.StoreMessage(ctx, assistantMsg.ID, "assistant", fullResponse.String(), emptyEmbedding, time.Now()); err != nil {
 						finalErrChan <- fmt.Errorf("failed to store assistant message: %w", err)
 						return
 					}
@@ -136,7 +136,7 @@ func (p *Pipeline) ProcessUserMessage(
 						}
 
 						// Update message with embedding
-						p.vectorStore.StoreMessage(context.Background(), chat.ID, assistantMsg.ID, "assistant", fullResponse.String(), embeddings[0], time.Now())
+						p.vectorStore.StoreMessage(context.Background(), assistantMsg.ID, "assistant", fullResponse.String(), embeddings[0], time.Now())
 					}()
 
 					return
