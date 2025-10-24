@@ -687,7 +687,6 @@ func (p *Pipeline) LoadMultipleDocuments(ctx context.Context, chat *vector.Chat,
 				}
 
 				logging.Info("Successfully stored %d chunks for %s", len(chunks), doc.FileName)
-				responseChan <- fmt.Sprintf("✓ Loaded %s (%d chunks)\n", doc.FileName, len(chunks))
 
 				totalChunks += len(chunks)
 				totalSuccess++
@@ -979,10 +978,12 @@ func findMentionedFile(userMessage string, docs []vector.Document) string {
 		// Check both full path and just filename
 		fileName := filepath.Base(doc.FilePath)
 		if strings.Contains(lowerMessage, strings.ToLower(fileName)) {
-			return doc.FilePath
+			// Return normalized path for consistent comparison
+			return filepath.Clean(doc.FilePath)
 		}
 		if strings.Contains(lowerMessage, strings.ToLower(doc.FilePath)) {
-			return doc.FilePath
+			// Return normalized path for consistent comparison
+			return filepath.Clean(doc.FilePath)
 		}
 	}
 
@@ -992,8 +993,13 @@ func findMentionedFile(userMessage string, docs []vector.Document) string {
 // filterChunksByFile returns only chunks from a specific file path
 func filterChunksByFile(chunks []vector.DocumentChunk, filePath string) []vector.DocumentChunk {
 	var filtered []vector.DocumentChunk
+	// Normalize the search path for comparison
+	normalizedSearchPath := strings.ToLower(filepath.Clean(filePath))
+
 	for _, chunk := range chunks {
-		if chunk.FilePath == filePath {
+		// Normalize stored path for comparison (case-insensitive on Windows)
+		normalizedChunkPath := strings.ToLower(filepath.Clean(chunk.FilePath))
+		if normalizedChunkPath == normalizedSearchPath {
 			filtered = append(filtered, chunk)
 		}
 	}
@@ -1009,18 +1015,33 @@ func getAllChunksFromFile(store *vector.BadgerStore, ctx context.Context, filePa
 		return []vector.DocumentChunk{}
 	}
 
+	// Normalize the search path for case-insensitive comparison on Windows
+	normalizedSearchPath := strings.ToLower(filepath.Clean(filePath))
+	logging.Debug("Searching for document with normalized path: %s", normalizedSearchPath)
+
 	var targetDocID string
+	var matchedPath string
 	for _, doc := range docs {
-		if doc.FilePath == filePath {
+		normalizedDocPath := strings.ToLower(filepath.Clean(doc.FilePath))
+		logging.Debug("Comparing against document: %s (normalized: %s)", doc.FilePath, normalizedDocPath)
+		if normalizedDocPath == normalizedSearchPath {
 			targetDocID = doc.ID
+			matchedPath = doc.FilePath
+			logging.Debug("Found matching document ID: %s", targetDocID)
 			break
 		}
 	}
 
 	if targetDocID == "" {
-		logging.Error("Document not found: %s", filePath)
+		logging.Error("Document not found for path: %s (normalized: %s)", filePath, normalizedSearchPath)
+		logging.Error("Available documents: %d", len(docs))
+		for i, doc := range docs {
+			logging.Error("  [%d] %s", i, doc.FilePath)
+		}
 		return []vector.DocumentChunk{}
 	}
+
+	logging.Info("Found document ID %s for path %s", targetDocID, matchedPath)
 
 	// Search with a dummy embedding to get all chunks, then filter by document ID
 	dummyEmbedding := make([]float32, 768)

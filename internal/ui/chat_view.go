@@ -345,10 +345,10 @@ func (m *ChatViewModel) renderMessages() {
 	for _, msg := range m.messages {
 		if msg.Role == "user" {
 			timestamp := msg.Timestamp.Format("15:04:05")
-			content := lipgloss.NewStyle().
+			label := lipgloss.NewStyle().
 				Foreground(lipgloss.Color("12")).
 				Bold(true).
-				Render("You: ") + msg.Content
+				Render("You:")
 
 			b.WriteString(lipgloss.NewStyle().
 				Foreground(lipgloss.Color("231")).
@@ -356,7 +356,7 @@ func (m *ChatViewModel) renderMessages() {
 				MarginBottom(1).
 				Width(m.width - 10).
 				Align(lipgloss.Right).
-				Render(content))
+				Render(label + "\n" + msg.Content))
 			b.WriteString(lipgloss.NewStyle().
 				Foreground(lipgloss.Color("241")).
 				Align(lipgloss.Right).
@@ -364,17 +364,17 @@ func (m *ChatViewModel) renderMessages() {
 				Render(timestamp))
 			b.WriteString("\n\n")
 		} else {
-			content := lipgloss.NewStyle().
+			label := lipgloss.NewStyle().
 				Foreground(lipgloss.Color("205")).
 				Bold(true).
-				Render("Assistant: ") + msg.Content
+				Render("Assistant:")
 
 			b.WriteString(lipgloss.NewStyle().
 				Foreground(lipgloss.Color("231")).
 				Padding(0, 1).
 				MarginBottom(1).
 				Width(m.width - 10).
-				Render(content))
+				Render(label + "\n" + msg.Content))
 			b.WriteString("\n\n")
 		}
 	}
