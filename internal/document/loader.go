@@ -120,16 +120,21 @@ func (l *Loader) loadFile(ctx context.Context, filePath string, chatID string, r
 		return fmt.Errorf("failed to parse %s: %w", filePath, parsed.Error)
 	}
 
+	// Calculate content hash for deduplication
+	cleaner := NewCleaner()
+	contentHash := cleaner.CalculateHash(parsed.Content)
+
 	// Create document record
 	doc := vector.Document{
-		ID:         uuid.New().String(),
-		ChatID:     chatID,
-		FilePath:   parsed.FilePath,
-		FileName:   parsed.FileName,
-		FileSize:   parsed.Size,
-		Encoding:   parsed.Encoding,
-		UploadedAt: time.Now(),
-		Metadata:   make(map[string]string),
+		ID:          uuid.New().String(),
+		ChatID:      chatID,
+		FilePath:    parsed.FilePath,
+		FileName:    parsed.FileName,
+		FileSize:    parsed.Size,
+		ContentHash: contentHash,
+		Encoding:    parsed.Encoding,
+		UploadedAt:  time.Now(),
+		Metadata:    make(map[string]string),
 	}
 
 	// Determine MIME type based on extension

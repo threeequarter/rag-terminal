@@ -508,6 +508,54 @@ func (s *BadgerStore) GetDocumentCount(ctx context.Context) (int, error) {
 	return count, nil
 }
 
+// FindDocumentByHash checks if a document with the same content hash already exists
+func (s *BadgerStore) FindDocumentByHash(ctx context.Context, contentHash string) (*Document, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if s.currentDB == nil {
+		return nil, fmt.Errorf("no chat is currently open")
+	}
+
+	var foundDoc *Document
+	prefix := []byte("doc:")
+
+	err := s.currentDB.View(func(txn *badger.Txn) error {
+		opts := badger.DefaultIteratorOptions
+		opts.Prefix = prefix
+		it := txn.NewIterator(opts)
+		defer it.Close()
+
+		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
+			item := it.Item()
+			err := item.Value(func(val []byte) error {
+				var doc Document
+				if err := json.Unmarshal(val, &doc); err != nil {
+					return err
+				}
+				if doc.ContentHash == contentHash {
+					foundDoc = &doc
+					return nil
+				}
+				return nil
+			})
+			if err != nil {
+				return err
+			}
+			if foundDoc != nil {
+				break
+			}
+		}
+		return nil
+	})
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to search for document by hash: %w", err)
+	}
+
+	return foundDoc, nil
+}
+
 // SearchSimilarWithChunks searches for similar content including both messages and document chunks
 func (s *BadgerStore) SearchSimilarWithChunks(ctx context.Context, queryEmbedding []float32, topK int) ([]Message, []DocumentChunk, error) {
 	s.mu.RLock()

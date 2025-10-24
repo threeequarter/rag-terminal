@@ -6,12 +6,20 @@ A Go-based RAG (Retrieval-Augmented Generation) chat application with a Bubblete
 
 - **Interactive TUI**: Built with Bubbletea for a clean terminal interface
 - **RAG Pipeline**: Retrieval-Augmented Generation with vector similarity search
-- **LLM-based Reranking**: Uses LLM to score and rerank retrieved context for better relevance
+- **Document Processing**: Load and embed documents from files or directories
+- **Content Optimization**: Smart excerpt extraction and text normalization for efficient token usage
+- **Code-Aware Chunking**: Preserves code structure by chunking at function/class boundaries instead of arbitrary sizes
+- **Multilingual Support**: Automatic language detection and stop word filtering for English, German, French, Spanish, and Russian
+- **Deduplication**: SHA-256 hashing prevents duplicate document storage
+- **Smart Path Detection**: Automatically detects Windows file paths in user messages
+- **LLM-based Reranking**: Scores and reranks retrieved context for relevance
+- **File-Specific Queries**: Prioritizes content from mentioned files
 - **Database-per-Chat**: Isolated vector storage for each chat conversation
 - **Streaming Responses**: Real-time streaming of AI responses
 - **Model Selection**: Choose from available LLM and embedding models
 - **Chat Management**: Create, list, and delete chat conversations
 - **Persistent Storage**: All chats and messages stored locally in BadgerDB
+- **Debug Logging**: Automatic logging to file for troubleshooting
 
 ## Architecture
 
@@ -24,21 +32,43 @@ A Go-based RAG (Retrieval-Augmented Generation) chat application with a Bubblete
 - **Vector Storage** (`internal/vector/`): BadgerDB-based vector database
   - Separate database per chat (database-per-chat pattern)
   - Message storage with embeddings
-  - Cosine similarity search
+  - Document and chunk storage with embeddings
+  - Cosine similarity search for messages and document chunks
   - Chat metadata management
 
 - **RAG Pipeline** (`internal/rag/`): Orchestrates the RAG flow
   - Embedding generation for queries
-  - Vector similarity search (top-K × 2 when reranking enabled)
+  - Document loading and chunking from files/directories
+  - Vector similarity search for messages and document chunks
   - LLM-based reranking (scores 0-10 per message)
-  - Context injection into prompts with numbered conversations
+  - Hierarchical context building with smart excerpt extraction
+  - File-specific query handling (prioritizes chunks from mentioned files)
   - Asynchronous embedding updates to prevent blocking
+
+- **Document Processing** (`internal/document/`): File and path handling
+  - Windows path detection and parsing
+  - Text cleaning and normalization (whitespace, boilerplate removal)
+  - Smart excerpt extraction based on query relevance
+  - Code-aware chunking (chunks at function/class/struct boundaries)
+  - Supports Go, Python, JavaScript, TypeScript, Java, C#, Rust, C/C++
+  - Multilingual stop word filtering (EN, DE, FR, ES, RU)
+  - Automatic language detection
+  - Content summarization (LLM-based and extractive)
+  - Optimized chunking (50-char overlap for text, structure-based for code)
+  - SHA-256 content hashing for deduplication
+  - Support for various document formats
 
 - **UI Components** (`internal/ui/`): Bubbletea TUI screens
   - Model selection (LLM and embedding)
   - Chat list management
   - Chat creation with RAG parameters
-  - Chat conversation view
+  - Chat conversation view with document loading support
+
+- **Logging** (`internal/logging/`): Debug logging system
+  - File-based logging next to executable
+  - Timestamped log files (rag-debug-YYYY-MM-DD.log)
+  - Debug, Info, and Error level logging
+  - Detailed operation tracing for troubleshooting
 
 ## Prerequisites
 
@@ -99,25 +129,46 @@ A Go-based RAG (Retrieval-Augmented Generation) chat application with a Bubblete
    - **Top K**: Context messages to retrieve (default: 5)
    - **Use LLM Reranking**: Enabled by default - LLM scores retrieved messages for relevance
 
-4. **Chat Workflow**:
-   - Send message → generates embedding → searches similar messages
+4. **Load Documents** (Optional):
+   - Type a Windows file path (e.g., `C:\path\to\file.txt` or `C:\path\to\folder`)
+   - Documents are automatically chunked and embedded
+   - You can include a query with the path (e.g., `C:\docs\report.txt what is the summary?`)
+   - All loaded documents become part of the chat context
+
+5. **Chat Workflow**:
+   - Send message → generates embedding → searches similar messages and document chunks
    - If reranking enabled: retrieves top-K × 2, LLM scores each, takes top-K
    - If reranking disabled: uses cosine similarity ranking
-   - Context injected as numbered conversations
+   - If specific file mentioned: prioritizes chunks from that file
+   - Context injected as numbered conversations and relevant document excerpts
    - LLM generates response with full context
    - Both user and assistant messages stored with embeddings
 
 ## RAG Flow
 
+### Document Loading Flow
+
+1. **Path Detection** → Detects Windows absolute paths in user input (e.g., `C:\docs\file.txt`)
+2. **Document Loading** → Loads file(s) and chunks content into manageable pieces
+3. **Batch Embedding** → Generates embeddings for all chunks using embedding model
+4. **Storage** → Stores document metadata and chunks with embeddings in BadgerDB
+5. **Query Processing** (if query included with path) → Immediately processes user query with document context
+
+### Chat Flow
+
 1. **User Message** → Generate embedding with embedding model
-2. **Vector Search** → Cosine similarity search in current chat's database (retrieves top-K × 2 if reranking enabled)
-3. **LLM Reranking** (optional, enabled by default):
-   - LLM scores each message 0-10 for relevance to user query
+2. **Vector Search** → Cosine similarity search for both messages and document chunks (retrieves top-K × 2 if reranking enabled)
+3. **File-Specific Filtering** (if file mentioned) → Prioritizes chunks from mentioned file
+4. **LLM Reranking** (optional, enabled by default):
+   - LLM scores each message/chunk 0-10 for relevance to user query
    - Sorts by score, selects top-K most relevant
    - Falls back to cosine similarity if reranking fails
-4. **Context Injection** → Build prompt with numbered conversations: "Context from previous conversations (all relevant):"
-5. **LLM Generation** → Stream response using context
-6. **Storage** → Store user message immediately, assistant message stored with empty embedding first, then updated asynchronously (500ms delay to avoid model switching conflicts)
+5. **Context Injection** → Build prompt with:
+   - Loaded documents list (for directory structure awareness)
+   - Relevant document excerpts with file paths
+   - Numbered conversations from message history
+6. **LLM Generation** → Stream response using full context
+7. **Storage** → Store user message immediately, assistant message stored with empty embedding first, then updated asynchronously (500ms delay to avoid model switching conflicts)
 
 ## Configuration
 
@@ -128,6 +179,8 @@ A Go-based RAG (Retrieval-Augmented Generation) chat application with a Bubblete
 - **Temperature**: 0.7
 - **Top K**: 5
 - **Max Tokens**: 2048
+- **Chunk Size**: 1000 characters
+- **Chunk Overlap**: 50 characters (optimized for token efficiency)
 - **LLM Reranking**: Enabled by default
 
 ### RAG Parameters
@@ -152,7 +205,18 @@ rag-terminal/
 │   │   ├── badger.go          # BadgerDB with database-per-chat
 │   │   └── similarity.go      # Cosine similarity
 │   ├── rag/                    # RAG pipeline
-│   │   └── pipeline.go        # RAG orchestration & LLM reranking
+│   │   └── pipeline.go        # RAG orchestration, hierarchical context building
+│   ├── document/               # Document processing
+│   │   ├── loader.go          # Document loading & chunking
+│   │   ├── path_detector.go   # Windows path detection
+│   │   ├── cleaner.go         # Text normalization & deduplication
+│   │   ├── extractor.go       # Smart excerpt extraction
+│   │   ├── stopwords.go       # Multilingual stop word filtering
+│   │   ├── summarizer.go      # Content summarization
+│   │   ├── chunker.go         # Optimized text chunking
+│   │   └── code_chunker.go    # Code-aware structural chunking
+│   ├── logging/                # Logging system
+│   │   └── logger.go          # File-based debug logging
 │   ├── models/                 # Data models
 │   │   ├── chat.go            # Chat metadata
 │   │   └── message.go         # Message structure
@@ -212,6 +276,22 @@ rag-terminal/
 - Verify the LLM model is properly loaded
 - Check network connectivity to Nexa server
 - Ensure sufficient system resources
+
+### Documents not loading
+- Ensure the file path is a valid Windows absolute path (e.g., `C:\path\to\file.txt`)
+- Check that the file/directory exists and is accessible
+- Verify the file format is supported
+- Review debug logs: `rag-debug-YYYY-MM-DD.log` next to the executable
+
+### Path detection not working
+- Path must be a Windows absolute path starting with drive letter (e.g., `C:\`, `D:\`)
+- Path should not contain invalid Windows filename characters (`< > | " * ?`)
+- Try wrapping path in quotes if it contains spaces
+
+### Debug logs
+- Log files are created next to the executable as `rag-debug-YYYY-MM-DD.log`
+- Logs include detailed tracing of document loading, embedding generation, and search operations
+- Use logs to troubleshoot issues with document processing and path detection
 
 ## Development
 

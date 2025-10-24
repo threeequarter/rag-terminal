@@ -310,34 +310,51 @@ func (p *Pipeline) buildPromptWithContextAndDocuments(systemPrompt string, conte
 func (p *Pipeline) buildPromptWithContextAndDocumentsAndFileList(systemPrompt string, contextMessages []vector.Message, contextChunks []vector.DocumentChunk, allDocs []vector.Document, userMessage string) string {
 	var builder strings.Builder
 
-	// Add loaded documents list first (for questions about files/directory structure)
+	// HIERARCHICAL CONTEXT STRUCTURE
+	// Layer 1: Document overview (minimal tokens, high-level awareness)
 	if len(allDocs) > 0 {
-		builder.WriteString("Loaded documents in current context:\n\n")
+		builder.WriteString("# Available Documents\n")
 		for i, doc := range allDocs {
-			builder.WriteString(fmt.Sprintf("%d. %s (%d bytes, %d chunks)\n", i+1, doc.FilePath, doc.FileSize, doc.ChunkCount))
+			builder.WriteString(fmt.Sprintf("%d. %s (%d chunks)\n", i+1, doc.FileName, doc.ChunkCount))
 		}
-		builder.WriteString("\n---\n\n")
+		builder.WriteString("\n")
 	}
 
-	// Add document chunks (specific relevant excerpts)
+	// Layer 2: Relevant excerpts (optimized for information density)
 	if len(contextChunks) > 0 {
-		builder.WriteString("Relevant document excerpts:\n\n")
-		for i, chunk := range contextChunks {
-			builder.WriteString(fmt.Sprintf("%d. [doc: %s]\n%s\n\n", i+1, chunk.FilePath, chunk.Content))
+		builder.WriteString("# Relevant Information\n\n")
+
+		// Use extractor to get only the most relevant parts of each chunk
+		extractor := document.NewExtractor()
+
+		for _, chunk := range contextChunks {
+			// Extract relevant excerpt (max 500 chars per chunk instead of full 1000)
+			// This allows fitting 2x more chunks in same context window
+			excerpt := extractor.ExtractRelevantExcerpt(chunk.Content, userMessage, 500)
+
+			// Add source reference
+			fileName := filepath.Base(chunk.FilePath)
+			builder.WriteString(fmt.Sprintf("[%s]\n%s\n\n", fileName, excerpt))
 		}
 		builder.WriteString("---\n\n")
 	}
 
-	// Add conversation context
+	// Layer 3: Conversation history (brief summaries)
 	if len(contextMessages) > 0 {
-		builder.WriteString("Context from previous conversations:\n\n")
-		for i, msg := range contextMessages {
-			builder.WriteString(fmt.Sprintf("%d. [%s]: %s\n", i+1, msg.Role, msg.Content))
+		builder.WriteString("# Previous Context\n")
+		for _, msg := range contextMessages {
+			// Truncate long messages to save tokens
+			content := msg.Content
+			if len(content) > 200 {
+				content = content[:197] + "..."
+			}
+			builder.WriteString(fmt.Sprintf("[%s]: %s\n", msg.Role, content))
 		}
-		builder.WriteString("\n---\n\n")
+		builder.WriteString("\n")
 	}
 
-	builder.WriteString("Current message: ")
+	// Current query (full detail)
+	builder.WriteString("# Current Query\n")
 	builder.WriteString(userMessage)
 
 	return builder.String()
@@ -382,7 +399,15 @@ func (p *Pipeline) LoadDocuments(ctx context.Context, chat *vector.Chat, path st
 		}
 
 		for _, doc := range loadResult.Documents {
-			logging.Debug("Processing document: %s (size=%d)", doc.FileName, doc.FileSize)
+			logging.Debug("Processing document: %s (size=%d, hash=%s)", doc.FileName, doc.FileSize, doc.ContentHash)
+
+			// Check if document with same content hash already exists
+			existingDoc, err := badgerStore.FindDocumentByHash(ctx, doc.ContentHash)
+			if err == nil && existingDoc != nil {
+				logging.Info("Document %s already exists (duplicate of %s), skipping", doc.FileName, existingDoc.FileName)
+				responseChan <- fmt.Sprintf("Skipped %s (duplicate of %s)\n", doc.FileName, existingDoc.FileName)
+				continue
+			}
 
 			// Store document metadata
 			if err := badgerStore.StoreDocument(ctx, &doc); err != nil {

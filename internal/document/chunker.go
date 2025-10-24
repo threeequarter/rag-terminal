@@ -10,7 +10,8 @@ const (
 	DefaultChunkSize = 1000
 
 	// DefaultChunkOverlap is the number of characters to overlap between chunks
-	DefaultChunkOverlap = 200
+	// Reduced from 200 to 50 to maximize unique content in LLM context window
+	DefaultChunkOverlap = 50
 
 	// MaxChunkSize is the maximum allowed chunk size
 	MaxChunkSize = 2000
@@ -20,6 +21,7 @@ const (
 type Chunker struct {
 	ChunkSize    int
 	ChunkOverlap int
+	cleaner      *Cleaner
 }
 
 // NewChunker creates a new chunker with default settings
@@ -27,6 +29,7 @@ func NewChunker() *Chunker {
 	return &Chunker{
 		ChunkSize:    DefaultChunkSize,
 		ChunkOverlap: DefaultChunkOverlap,
+		cleaner:      NewCleaner(),
 	}
 }
 
@@ -40,7 +43,13 @@ type Chunk struct {
 
 // ChunkDocument splits a document into overlapping chunks
 // It attempts to preserve paragraph and sentence boundaries where possible
+// For code files, it uses structure-aware chunking
 func (c *Chunker) ChunkDocument(content string) []Chunk {
+	// Check if content looks like code
+	if c.isCodeContent(content) {
+		return c.chunkAsCode(content)
+	}
+
 	if len(content) <= c.ChunkSize {
 		// Document is small enough to be a single chunk
 		return []Chunk{
@@ -73,11 +82,11 @@ func (c *Chunker) ChunkDocument(content string) []Chunk {
 		// Extract the chunk
 		chunkContent := content[position:endPos]
 
-		// Trim leading/trailing whitespace
-		chunkContent = strings.TrimSpace(chunkContent)
+		// Clean and normalize the chunk content
+		chunkContent = c.cleaner.CleanText(chunkContent)
 
-		// Only add non-empty chunks
-		if len(chunkContent) > 0 {
+		// Skip chunks that are mostly whitespace or formatting
+		if len(chunkContent) > 0 && !c.cleaner.IsContentMostlyWhitespace(chunkContent) {
 			chunks = append(chunks, Chunk{
 				Content:  chunkContent,
 				StartPos: position,
@@ -203,4 +212,46 @@ func (c *Chunker) GetChunkWithContext(content string, chunk Chunk, contextSize i
 	}
 
 	return beforeContext + chunk.Content + afterContext
+}
+
+// isCodeContent detects if content is source code
+func (c *Chunker) isCodeContent(content string) bool {
+	// Check for common code patterns
+	codeIndicators := []string{
+		"func ", "function ", "def ", "class ", "import ",
+		"package ", "public ", "private ", "const ",
+		"var ", "let ", "interface ", "struct ", "impl ",
+		"#include", "using ", "namespace ",
+	}
+
+	indicatorCount := 0
+	for _, indicator := range codeIndicators {
+		if strings.Contains(content, indicator) {
+			indicatorCount++
+		}
+	}
+
+	// If we find 3+ code indicators, likely code
+	if indicatorCount >= 3 {
+		return true
+	}
+
+	// Check for code-like structure (lots of braces, semicolons)
+	braceCount := strings.Count(content, "{") + strings.Count(content, "}")
+	semicolonCount := strings.Count(content, ";")
+	totalLines := strings.Count(content, "\n") + 1
+
+	// If more than 20% of lines have braces or semicolons, likely code
+	codeChars := braceCount + semicolonCount
+	if totalLines > 10 && float64(codeChars)/float64(totalLines) > 0.2 {
+		return true
+	}
+
+	return false
+}
+
+// chunkAsCode uses code-aware chunking
+func (c *Chunker) chunkAsCode(content string) []Chunk {
+	codeChunker := NewCodeChunker("")
+	return codeChunker.ChunkCode(content, c.ChunkSize)
 }

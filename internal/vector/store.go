@@ -69,6 +69,7 @@ type Document struct {
 	FilePath    string            `json:"file_path"`
 	FileName    string            `json:"file_name"`
 	FileSize    int64             `json:"file_size"`
+	ContentHash string            `json:"content_hash"` // SHA-256 hash for deduplication
 	MimeType    string            `json:"mime_type"`
 	Encoding    string            `json:"encoding"`
 	ChunkCount  int               `json:"chunk_count"`
