@@ -11,7 +11,8 @@ A Go-based RAG (Retrieval-Augmented Generation) chat application with a Bubblete
 - **Code-Aware Chunking**: Preserves code structure by chunking at function/class boundaries instead of arbitrary sizes
 - **Multilingual Support**: Automatic language detection and stop word filtering for English, German, French, Spanish, and Russian
 - **Deduplication**: SHA-256 hashing prevents duplicate document storage
-- **Smart Path Detection**: Automatically detects Windows file paths in user messages
+- **Cross-Platform Path Detection**: Automatically detects file paths on Windows, Linux, and macOS
+- **Multi-File Support**: Load and compare multiple files in a single message
 - **LLM-based Reranking**: Scores and reranks retrieved context for relevance
 - **File-Specific Queries**: Prioritizes content from mentioned files
 - **Database-per-Chat**: Isolated vector storage for each chat conversation
@@ -46,7 +47,8 @@ A Go-based RAG (Retrieval-Augmented Generation) chat application with a Bubblete
   - Asynchronous embedding updates to prevent blocking
 
 - **Document Processing** (`internal/document/`): File and path handling
-  - Windows path detection and parsing
+  - Cross-platform path detection (Windows, Linux, macOS)
+  - Multi-path extraction from single message
   - Text cleaning and normalization (whitespace, boilerplate removal)
   - Smart excerpt extraction based on query relevance
   - Code-aware chunking (chunks at function/class/struct boundaries)
@@ -130,9 +132,12 @@ A Go-based RAG (Retrieval-Augmented Generation) chat application with a Bubblete
    - **Use LLM Reranking**: Enabled by default - LLM scores retrieved messages for relevance
 
 4. **Load Documents** (Optional):
-   - Type a Windows file path (e.g., `C:\path\to\file.txt` or `C:\path\to\folder`)
+   - Type one or more file paths:
+     - Windows: `C:\path\to\file.txt` or `C:\folder`
+     - Linux/macOS: `/home/user/file.txt` or `/usr/local/docs`
+   - Load multiple files: `Compare C:\file1.txt and C:\file2.txt`
+   - Include queries: `Analyze /home/user/data.csv and explain the trends`
    - Documents are automatically chunked and embedded
-   - You can include a query with the path (e.g., `C:\docs\report.txt what is the summary?`)
    - All loaded documents become part of the chat context
 
 5. **Chat Workflow**:
@@ -208,7 +213,8 @@ rag-terminal/
 │   │   └── pipeline.go        # RAG orchestration, hierarchical context building
 │   ├── document/               # Document processing
 │   │   ├── loader.go          # Document loading & chunking
-│   │   ├── path_detector.go   # Windows path detection
+│   │   ├── path_detector.go   # Path detection (legacy)
+│   │   ├── path_detector_v2.go # Cross-platform multi-path detection
 │   │   ├── cleaner.go         # Text normalization & deduplication
 │   │   ├── extractor.go       # Smart excerpt extraction
 │   │   ├── stopwords.go       # Multilingual stop word filtering
