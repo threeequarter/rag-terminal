@@ -44,17 +44,23 @@ func (c *CodeChunker) ChunkCode(code string, maxChunkSize int) []Chunk {
 	for _, block := range blocks {
 		content := c.optimizeCodeBlock(block)
 
+		if len(strings.TrimSpace(content)) == 0 {
+			continue
+		}
+
 		// If block is too large, split it but keep it meaningful
 		if len(content) > maxChunkSize {
 			subChunks := c.splitLargeBlock(block, maxChunkSize)
 			for _, subContent := range subChunks {
-				chunks = append(chunks, Chunk{
-					Content:  subContent,
-					StartPos: block.StartLine,
-					EndPos:   block.EndLine,
-					Index:    chunkIndex,
-				})
-				chunkIndex++
+				if len(strings.TrimSpace(subContent)) > 0 {
+					chunks = append(chunks, Chunk{
+						Content:  subContent,
+						StartPos: block.StartLine,
+						EndPos:   block.EndLine,
+						Index:    chunkIndex,
+					})
+					chunkIndex++
+				}
 			}
 		} else {
 			chunks = append(chunks, Chunk{
@@ -64,6 +70,46 @@ func (c *CodeChunker) ChunkCode(code string, maxChunkSize int) []Chunk {
 				Index:    chunkIndex,
 			})
 			chunkIndex++
+		}
+	}
+
+	if len(chunks) == 0 && len(strings.TrimSpace(code)) > 0 {
+		if len(code) > maxChunkSize {
+			lines := strings.Split(code, "\n")
+			currentChunk := []string{}
+			currentSize := 0
+
+			for _, line := range lines {
+				lineSize := len(line) + 1
+				if currentSize+lineSize > maxChunkSize && len(currentChunk) > 0 {
+					chunks = append(chunks, Chunk{
+						Content:  strings.Join(currentChunk, "\n"),
+						StartPos: 0,
+						EndPos:   len(currentChunk),
+						Index:    len(chunks),
+					})
+					currentChunk = []string{}
+					currentSize = 0
+				}
+				currentChunk = append(currentChunk, line)
+				currentSize += lineSize
+			}
+
+			if len(currentChunk) > 0 {
+				chunks = append(chunks, Chunk{
+					Content:  strings.Join(currentChunk, "\n"),
+					StartPos: 0,
+					EndPos:   len(lines),
+					Index:    len(chunks),
+				})
+			}
+		} else {
+			chunks = append(chunks, Chunk{
+				Content:  code,
+				StartPos: 0,
+				EndPos:   len(code),
+				Index:    0,
+			})
 		}
 	}
 
@@ -82,6 +128,7 @@ func (c *CodeChunker) detectLanguage(code string) string {
 		"csharp":     {"public class", "private ", "using ", "namespace "},
 		"rust":       {"fn ", "impl ", "struct ", "enum ", "use "},
 		"cpp":        {"#include", "class ", "void ", "int ", "namespace "},
+		"sql":        {"create ", "alter ", "drop ", "select ", "insert ", "update ", "delete ", "from ", "where "},
 	}
 
 	scores := make(map[string]int)
@@ -119,6 +166,8 @@ func (c *CodeChunker) extractCodeBlocks(code string) []CodeBlock {
 		return c.extractJavaLikeBlocks(code)
 	case "rust":
 		return c.extractRustBlocks(code)
+	case "sql":
+		return c.extractSQLBlocks(code)
 	default:
 		return c.extractGenericBlocks(code)
 	}
@@ -320,6 +369,106 @@ func (c *CodeChunker) extractRustBlocks(code string) []CodeBlock {
 	}
 
 	return blocks
+}
+
+// extractSQLBlocks extracts SQL statements, procedures, functions, triggers
+func (c *CodeChunker) extractSQLBlocks(code string) []CodeBlock {
+	blocks := []CodeBlock{}
+	lines := strings.Split(code, "\n")
+
+	createProcPattern := regexp.MustCompile(`(?i)^create\s+(procedure|proc|function)\s+(\[?\w+\]?)`)
+	createTriggerPattern := regexp.MustCompile(`(?i)^create\s+trigger\s+(\[?\w+\]?)`)
+	createViewPattern := regexp.MustCompile(`(?i)^create\s+view\s+(\[?\w+\]?)`)
+	createTablePattern := regexp.MustCompile(`(?i)^create\s+table\s+(\[?\w+\]?)`)
+	alterTablePattern := regexp.MustCompile(`(?i)^alter\s+table\s+(\[?\w+\]?)`)
+
+	i := 0
+	for i < len(lines) {
+		line := strings.TrimSpace(lines[i])
+		lowerLine := strings.ToLower(line)
+
+		if match := createProcPattern.FindStringSubmatch(line); match != nil {
+			block := c.extractSQLStatement(lines, i, match[1], match[2])
+			blocks = append(blocks, block)
+			i = block.EndLine
+			continue
+		}
+
+		if match := createTriggerPattern.FindStringSubmatch(line); match != nil {
+			block := c.extractSQLStatement(lines, i, "trigger", match[1])
+			blocks = append(blocks, block)
+			i = block.EndLine
+			continue
+		}
+
+		if match := createViewPattern.FindStringSubmatch(line); match != nil {
+			block := c.extractSQLStatement(lines, i, "view", match[1])
+			blocks = append(blocks, block)
+			i = block.EndLine
+			continue
+		}
+
+		if match := createTablePattern.FindStringSubmatch(line); match != nil {
+			block := c.extractSQLStatement(lines, i, "table", match[1])
+			blocks = append(blocks, block)
+			i = block.EndLine
+			continue
+		}
+
+		if match := alterTablePattern.FindStringSubmatch(line); match != nil {
+			block := c.extractSQLStatement(lines, i, "alter", match[1])
+			blocks = append(blocks, block)
+			i = block.EndLine
+			continue
+		}
+
+		if strings.HasPrefix(lowerLine, "select ") || strings.HasPrefix(lowerLine, "insert ") ||
+			strings.HasPrefix(lowerLine, "update ") || strings.HasPrefix(lowerLine, "delete ") {
+			block := c.extractSQLStatement(lines, i, "query", "")
+			blocks = append(blocks, block)
+			i = block.EndLine
+			continue
+		}
+
+		i++
+	}
+
+	if len(blocks) == 0 {
+		return c.extractGenericBlocks(code)
+	}
+
+	return blocks
+}
+
+// extractSQLStatement extracts a complete SQL statement (until GO or semicolon)
+func (c *CodeChunker) extractSQLStatement(lines []string, startIdx int, blockType string, name string) CodeBlock {
+	content := []string{}
+
+	for i := startIdx; i < len(lines); i++ {
+		line := lines[i]
+		content = append(content, line)
+
+		trimmed := strings.TrimSpace(strings.ToUpper(line))
+		if trimmed == "GO" || trimmed == "GO;" || strings.HasSuffix(strings.TrimSpace(line), ";") {
+			return CodeBlock{
+				Type:      blockType,
+				Name:      name,
+				Content:   strings.Join(content, "\n"),
+				StartLine: startIdx,
+				EndLine:   i + 1,
+				Language:  "sql",
+			}
+		}
+	}
+
+	return CodeBlock{
+		Type:      blockType,
+		Name:      name,
+		Content:   strings.Join(content, "\n"),
+		StartLine: startIdx,
+		EndLine:   len(lines),
+		Language:  "sql",
+	}
 }
 
 // extractGenericBlocks fallback for unknown languages
