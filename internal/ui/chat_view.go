@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
@@ -17,21 +18,34 @@ import (
 	"rag-chat/internal/vector"
 )
 
+const (
+	titleHeight     = 3
+	textareaHeight  = 5
+	helpHeight      = 2
+	padding         = 2
+	renderInterval  = 50 * time.Millisecond
+	gotoBottomEvery = 100
+)
+
 type ChatViewModel struct {
-	chat        *vector.Chat
-	pipeline    *rag.Pipeline
-	vectorStore vector.VectorStore
-	messages    []vector.Message
-	viewport    viewport.Model
-	textarea    textarea.Model
-	width       int
-	height      int
-	isThinking  bool
-	err         error
-	ctx         context.Context
-	cancelFunc  context.CancelFunc
-	streamChan  <-chan string
-	errChan     <-chan error
+	chat         *vector.Chat
+	pipeline     *rag.Pipeline
+	vectorStore  vector.VectorStore
+	messages     []vector.Message
+	viewport     viewport.Model
+	textarea     textarea.Model
+	spinner      spinner.Model
+	width        int
+	height       int
+	isThinking   bool
+	err          error
+	ctx          context.Context
+	cancelFunc   context.CancelFunc
+	streamChan   <-chan string
+	errChan      <-chan error
+	streamBuffer strings.Builder
+	lastRender   time.Time
+	tokenCount   int
 }
 
 type ChatMessageReceived struct {
@@ -46,6 +60,8 @@ type ChatResponseError struct {
 	Err error
 }
 
+type RenderTickMsg struct{}
+
 func NewChatViewModel(chat *vector.Chat, pipeline *rag.Pipeline, vectorStore vector.VectorStore, width, height int) ChatViewModel {
 	ta := textarea.New()
 	ta.Placeholder = "Type your message..."
@@ -55,8 +71,14 @@ func NewChatViewModel(chat *vector.Chat, pipeline *rag.Pipeline, vectorStore vec
 	ta.SetHeight(3)
 	ta.ShowLineNumbers = false
 
-	vp := viewport.New(width-2, height-10)
+	viewportHeight := height - titleHeight - textareaHeight - helpHeight - padding
+	vp := viewport.New(width-2, viewportHeight)
 	vp.SetContent("")
+	vp.MouseWheelDelta = 2
+
+	sp := spinner.New()
+	sp.Spinner = spinner.Dot
+	sp.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("205"))
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -66,16 +88,19 @@ func NewChatViewModel(chat *vector.Chat, pipeline *rag.Pipeline, vectorStore vec
 		vectorStore: vectorStore,
 		viewport:    vp,
 		textarea:    ta,
+		spinner:     sp,
 		width:       width,
 		height:      height,
 		ctx:         ctx,
 		cancelFunc:  cancel,
+		lastRender:  time.Now(),
 	}
 }
 
 func (m ChatViewModel) Init() tea.Cmd {
 	return tea.Batch(
 		textarea.Blink,
+		m.spinner.Tick,
 		m.loadMessages(),
 	)
 }
@@ -87,8 +112,9 @@ func (m ChatViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		viewportHeight := msg.Height - titleHeight - textareaHeight - helpHeight - padding
 		m.viewport.Width = msg.Width - 2
-		m.viewport.Height = msg.Height - 10
+		m.viewport.Height = viewportHeight
 		m.textarea.SetWidth(msg.Width - 4)
 		return m, nil
 
@@ -105,8 +131,6 @@ func (m ChatViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 		case "ctrl+f":
-			// TODO: Show file list popup
-			// For now, just show document count in status
 			return m, nil
 
 		case "enter":
@@ -115,7 +139,6 @@ func (m ChatViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.textarea.Reset()
 				m.isThinking = true
 
-				// Add user message to display immediately
 				m.addUserMessage(userMessage)
 
 				return m, m.sendMessage(userMessage)
@@ -128,26 +151,34 @@ func (m ChatViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case ChatMessageReceived:
-		// Append token to last message
-		if len(m.messages) > 0 {
-			lastMsg := &m.messages[len(m.messages)-1]
-			if lastMsg.Role == "assistant" {
-				lastMsg.Content += msg.Token
-			}
+		m.streamBuffer.WriteString(msg.Token)
+		m.tokenCount++
+
+		if time.Since(m.lastRender) >= renderInterval {
+			m.flushStreamBuffer()
+			m.lastRender = time.Now()
 		}
-		m.renderMessages()
-		m.viewport.GotoBottom()
-		// Continue waiting for more tokens
+
 		return m, waitForStreamToken(msg.StreamChan, msg.ErrChan)
 
 	case ChatResponseComplete:
+		m.flushStreamBuffer()
 		m.isThinking = false
+		m.streamBuffer.Reset()
+		m.tokenCount = 0
 		return m, nil
 
 	case ChatResponseError:
 		m.err = msg.Err
 		m.isThinking = false
+		m.streamBuffer.Reset()
+		m.tokenCount = 0
 		return m, nil
+
+	case spinner.TickMsg:
+		var cmd tea.Cmd
+		m.spinner, cmd = m.spinner.Update(msg)
+		return m, cmd
 	}
 
 	if !m.isThinking {
@@ -170,15 +201,13 @@ func (m ChatViewModel) View() string {
 
 	var b strings.Builder
 
-	// Title bar
 	title := lipgloss.NewStyle().
 		Bold(true).
-		Foreground(lipgloss.Color("10")).
+		Foreground(lipgloss.Color("205")).
 		Padding(0, 1).
 		Render(m.chat.Name)
 	b.WriteString(title + "\n")
 
-	// Status bar
 	status := fmt.Sprintf("Model: %s | RAG: %s | Temp: %.1f | TopK: %d",
 		m.chat.LLMModel,
 		map[bool]string{true: "ON", false: "OFF"}[m.chat.UseReranking],
@@ -186,22 +215,27 @@ func (m ChatViewModel) View() string {
 		m.chat.TopK,
 	)
 	if m.isThinking {
-		status += " | 🤔 Thinking..."
+		status += " | " + m.spinner.View() + " Thinking..."
 	}
 	b.WriteString(statusBarStyle.Render(status) + "\n\n")
 
-	// Messages viewport
-	b.WriteString(lipgloss.NewStyle().
+	viewportWithBorder := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color("62")).
 		Padding(0, 1).
-		Render(m.viewport.View()))
+		Render(m.viewport.View())
+
+	b.WriteString(viewportWithBorder)
+	b.WriteString("\n")
+
+	scrollInfo := m.renderScrollIndicator()
+	if scrollInfo != "" {
+		b.WriteString(scrollInfo)
+	}
 	b.WriteString("\n\n")
 
-	// Input area
-	b.WriteString(m.textarea.View() + "\n\n")
+	b.WriteString(m.textarea.View() + "\n")
 
-	// Help text
 	helpText := "Enter: Send • Ctrl+F: Files • Esc: Back to List • Ctrl+X: Quit"
 	b.WriteString(helpStyle.Render(helpText))
 
@@ -309,10 +343,8 @@ func (m *ChatViewModel) renderMessages() {
 	var b strings.Builder
 
 	for _, msg := range m.messages {
-		timestamp := msg.Timestamp.Format("15:04:05")
-
 		if msg.Role == "user" {
-			// User message - right aligned, blue
+			timestamp := msg.Timestamp.Format("15:04:05")
 			content := lipgloss.NewStyle().
 				Foreground(lipgloss.Color("12")).
 				Bold(true).
@@ -332,9 +364,8 @@ func (m *ChatViewModel) renderMessages() {
 				Render(timestamp))
 			b.WriteString("\n\n")
 		} else {
-			// Assistant message - left aligned, gray
 			content := lipgloss.NewStyle().
-				Foreground(lipgloss.Color("10")).
+				Foreground(lipgloss.Color("205")).
 				Bold(true).
 				Render("Assistant: ") + msg.Content
 
@@ -344,15 +375,45 @@ func (m *ChatViewModel) renderMessages() {
 				MarginBottom(1).
 				Width(m.width - 10).
 				Render(content))
-			b.WriteString(lipgloss.NewStyle().
-				Foreground(lipgloss.Color("241")).
-				Width(m.width - 10).
-				Render(timestamp))
 			b.WriteString("\n\n")
 		}
 	}
 
 	m.viewport.SetContent(b.String())
+}
+
+func (m *ChatViewModel) flushStreamBuffer() {
+	if m.streamBuffer.Len() == 0 {
+		return
+	}
+
+	if len(m.messages) > 0 {
+		lastMsg := &m.messages[len(m.messages)-1]
+		if lastMsg.Role == "assistant" {
+			lastMsg.Content += m.streamBuffer.String()
+		}
+	}
+
+	m.streamBuffer.Reset()
+	m.renderMessages()
+
+	if m.tokenCount%gotoBottomEvery == 0 {
+		m.viewport.GotoBottom()
+	}
+}
+
+func (m ChatViewModel) renderScrollIndicator() string {
+	if m.viewport.TotalLineCount() <= m.viewport.Height {
+		return ""
+	}
+
+	scrollPercent := int(m.viewport.ScrollPercent() * 100)
+	indicator := fmt.Sprintf("Scroll: %d%% ↕", scrollPercent)
+
+	return lipgloss.NewStyle().
+		Foreground(lipgloss.Color("62")).
+		Bold(false).
+		Render(indicator)
 }
 
 type MessagesLoaded struct {
