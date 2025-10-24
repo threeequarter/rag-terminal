@@ -153,10 +153,10 @@ A Go-based RAG (Retrieval-Augmented Generation) chat application with a Bubblete
 
 ### Document Loading Flow
 
-1. **Path Detection** → Detects Windows absolute paths in user input (e.g., `C:\docs\file.txt`)
+1. **Path Detection** → Detects file paths in user input across platforms (Windows: `C:\docs\file.txt`, Unix: `/home/user/file.txt`)
 2. **Document Loading** → Loads file(s) and chunks content into manageable pieces
 3. **Batch Embedding** → Generates embeddings for all chunks using embedding model
-4. **Storage** → Stores document metadata and chunks with embeddings in BadgerDB
+4. **Storage** → Stores document metadata and chunks with embeddings in BadgerDB (deduplication via SHA-256 hash)
 5. **Query Processing** (if query included with path) → Immediately processes user query with document context
 
 ### Chat Flow
@@ -284,15 +284,19 @@ rag-terminal/
 - Ensure sufficient system resources
 
 ### Documents not loading
-- Ensure the file path is a valid Windows absolute path (e.g., `C:\path\to\file.txt`)
+- Ensure the file path is valid for your platform:
+  - Windows: `C:\path\to\file.txt` (drive letter + colon + backslash)
+  - Linux: `/home/user/file.txt` (absolute path starting with /)
+  - macOS: `/Users/name/file.txt` or `/Applications/App.app`
 - Check that the file/directory exists and is accessible
 - Verify the file format is supported
 - Review debug logs: `rag-debug-YYYY-MM-DD.log` next to the executable
 
 ### Path detection not working
-- Path must be a Windows absolute path starting with drive letter (e.g., `C:\`, `D:\`)
-- Path should not contain invalid Windows filename characters (`< > | " * ?`)
-- Try wrapping path in quotes if it contains spaces
+- Windows paths: Must start with drive letter (e.g., `C:\`, `D:\`)
+- Unix paths: Must be absolute (start with `/`) and match common prefixes (`/home/`, `/usr/`, `/Applications/`)
+- Avoid invalid filename characters (`< > | " * ?`)
+- Try wrapping paths with spaces in quotes
 
 ### Debug logs
 - Log files are created next to the executable as `rag-debug-YYYY-MM-DD.log`
