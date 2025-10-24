@@ -1,4 +1,4 @@
-module rag-chat
+module rag-terminal
 
 go 1.25.3
 

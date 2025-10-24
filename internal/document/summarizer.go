@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"rag-chat/internal/nexa"
+	"rag-terminal/internal/nexa"
 )
 
 // Summarizer generates concise summaries of document chunks
@@ -41,7 +41,7 @@ Summary:`, targetLength, chunkContent)
 			{Role: "system", Content: "You are a text summarization assistant. Create concise, informative summaries that preserve key facts and concepts."},
 			{Role: "user", Content: prompt},
 		},
-		Temperature: 0.3, // Low temperature for consistent summarization
+		Temperature: 0.3,              // Low temperature for consistent summarization
 		MaxTokens:   targetLength / 2, // Rough token estimate
 		Stream:      false,
 	}

@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"rag-chat/internal/vector"
+	"rag-terminal/internal/vector"
 )
 
 // Loader orchestrates document loading, parsing, chunking, and storage

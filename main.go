@@ -9,11 +9,11 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"rag-chat/internal/logging"
-	"rag-chat/internal/nexa"
-	"rag-chat/internal/rag"
-	"rag-chat/internal/ui"
-	"rag-chat/internal/vector"
+	"rag-terminal/internal/logging"
+	"rag-terminal/internal/nexa"
+	"rag-terminal/internal/rag"
+	"rag-terminal/internal/ui"
+	"rag-terminal/internal/vector"
 )
 
 type appState int
@@ -67,7 +67,7 @@ func main() {
 		log.Fatalf("Failed to get user home directory: %v", err)
 	}
 
-	dbPath := filepath.Join(homeDir, ".rag-chat", "db")
+	dbPath := filepath.Join(homeDir, ".rag-terminal", "db")
 	if err := os.MkdirAll(dbPath, 0755); err != nil {
 		log.Fatalf("Failed to create database directory: %v", err)
 	}

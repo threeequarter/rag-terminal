@@ -9,11 +9,11 @@ import (
 	"strings"
 	"time"
 
-	"rag-chat/internal/document"
-	"rag-chat/internal/logging"
-	"rag-chat/internal/models"
-	"rag-chat/internal/nexa"
-	"rag-chat/internal/vector"
+	"rag-terminal/internal/document"
+	"rag-terminal/internal/logging"
+	"rag-terminal/internal/models"
+	"rag-terminal/internal/nexa"
+	"rag-terminal/internal/vector"
 )
 
 type Pipeline struct {

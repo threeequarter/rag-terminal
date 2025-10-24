@@ -12,10 +12,10 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"rag-chat/internal/document"
-	"rag-chat/internal/logging"
-	"rag-chat/internal/rag"
-	"rag-chat/internal/vector"
+	"rag-terminal/internal/document"
+	"rag-terminal/internal/logging"
+	"rag-terminal/internal/rag"
+	"rag-terminal/internal/vector"
 )
 
 const (

@@ -7,7 +7,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"rag-chat/internal/nexa"
+	"rag-terminal/internal/nexa"
 )
 
 type modelSelectState int

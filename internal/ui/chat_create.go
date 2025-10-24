@@ -11,7 +11,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"rag-chat/internal/vector"
+	"rag-terminal/internal/vector"
 )
 
 type chatCreateField int
