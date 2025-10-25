@@ -25,7 +25,11 @@ type chatItem struct {
 
 func (i chatItem) Title() string { return i.chat.Name }
 func (i chatItem) Description() string {
-	return fmt.Sprintf("Created: %s | Model: %s", i.chat.CreatedAt.Format("2006-01-02 15:04"), i.chat.LLMModel)
+	fileInfo := ""
+	if i.chat.FileCount > 0 {
+		fileInfo = fmt.Sprintf(" | Files: %d", i.chat.FileCount)
+	}
+	return fmt.Sprintf("Created: %s | Model: %s%s", i.chat.CreatedAt.Format("2006-01-02 15:04"), i.chat.LLMModel, fileInfo)
 }
 func (i chatItem) FilterValue() string { return i.chat.Name }
 

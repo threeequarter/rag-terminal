@@ -247,6 +247,24 @@ func (s *BadgerStore) StoreChat(ctx context.Context, chat *Chat) error {
 	return nil
 }
 
+func (s *BadgerStore) UpdateChat(ctx context.Context, chat *Chat) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Update chat metadata as JSON file
+	metadataPath := filepath.Join(s.baseDir, chat.ID, "metadata.json")
+	data, err := json.Marshal(chat)
+	if err != nil {
+		return fmt.Errorf("failed to marshal chat metadata: %w", err)
+	}
+
+	if err := os.WriteFile(metadataPath, data, 0644); err != nil {
+		return fmt.Errorf("failed to write chat metadata: %w", err)
+	}
+
+	return nil
+}
+
 func (s *BadgerStore) GetChat(ctx context.Context, chatID string) (*Chat, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

@@ -712,6 +712,14 @@ func (p *Pipeline) LoadMultipleDocuments(ctx context.Context, chat *vector.Chat,
 			}
 		}
 
+		// Update chat file count
+		if totalSuccess > 0 {
+			chat.FileCount += totalSuccess
+			if err := badgerStore.UpdateChat(ctx, chat); err != nil {
+				logging.Error("Failed to update chat file count: %v", err)
+			}
+		}
+
 		// Documents loaded successfully, no success message needed in chat
 
 		// If user provided a query, process it immediately

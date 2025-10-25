@@ -60,6 +60,7 @@ type Chat struct {
 	TopK         int
 	UseReranking bool // When true, uses LLM-based reranking
 	MaxTokens    int
+	FileCount    int // Number of files embedded in this chat
 }
 
 // Document represents a file that has been loaded into the chat context
