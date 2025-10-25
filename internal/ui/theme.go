@@ -12,47 +12,59 @@ var Theme *tint.Registry
 // Common style elements used across all views
 var (
 	// Title styles
-	TitleStyle               lipgloss.Style
-	TitleWithPaddingStyle    lipgloss.Style
-	ActiveLabelStyle         lipgloss.Style
-	InactiveLabelStyle       lipgloss.Style
-	errorStyle               lipgloss.Style
-	ErrorMessageStyle        lipgloss.Style
-	statusBarStyle           lipgloss.Style
-	helpStyle                lipgloss.Style
-	HelpTextSimpleStyle      lipgloss.Style
-	ActiveButtonStyle        lipgloss.Style
-	InactiveButtonStyle      lipgloss.Style
-	UserMessageLabelStyle    lipgloss.Style
-	AssistantMessageLabelStyle lipgloss.Style
-	UserMessageContentStyle  lipgloss.Style
+	TitleStyle                   lipgloss.Style
+	TitleWithPaddingStyle        lipgloss.Style
+	ActiveLabelStyle             lipgloss.Style
+	InactiveLabelStyle           lipgloss.Style
+	errorStyle                   lipgloss.Style
+	ErrorMessageStyle            lipgloss.Style
+	statusBarStyle               lipgloss.Style
+	helpStyle                    lipgloss.Style
+	HelpTextSimpleStyle          lipgloss.Style
+	ActiveButtonStyle            lipgloss.Style
+	InactiveButtonStyle          lipgloss.Style
+	UserMessageLabelStyle        lipgloss.Style
+	AssistantMessageLabelStyle   lipgloss.Style
+	UserMessageContentStyle      lipgloss.Style
 	AssistantMessageContentStyle lipgloss.Style
-	TimestampStyle           lipgloss.Style
-	MetadataStyle            lipgloss.Style
-	SpinnerStyle             lipgloss.Style
-	ViewportBorderStyle      lipgloss.Style
-	ScrollIndicatorStyle     lipgloss.Style
+	TimestampStyle               lipgloss.Style
+	MetadataStyle                lipgloss.Style
+	SpinnerStyle                 lipgloss.Style
+	ViewportBorderStyle          lipgloss.Style
+	ScrollIndicatorStyle         lipgloss.Style
+
+	// File selector overlay styles
+	FileSelectorBorderStyle       lipgloss.Style
+	FileSelectorEmptyBorderStyle  lipgloss.Style
+	FileSelectorTitleStyle        lipgloss.Style
+	FileSelectorEmptyTitleStyle   lipgloss.Style
+	FileSelectorMessageStyle      lipgloss.Style
+	FileSelectorSelectedItemStyle lipgloss.Style
+	FileSelectorNormalItemStyle   lipgloss.Style
+	FileSelectorDimmedItemStyle   lipgloss.Style
+	FileSelectorFilterLabelStyle  lipgloss.Style
+	FileSelectorFilterInputStyle  lipgloss.Style
 )
 
 func init() {
 	// Initialize with 3024 Night theme
 	tint.NewDefaultRegistry()
-	tint.SetTint(tint.Tint3024Night)
+	tint.SetTint(tint.TintChalk)
 	Theme = tint.DefaultRegistry
 
 	// Initialize styles after tint is set up
 	TitleStyle = lipgloss.NewStyle().
 		Bold(true).
-		Foreground(tint.BrightPurple())
+		Foreground(tint.Purple())
 
 	TitleWithPaddingStyle = lipgloss.NewStyle().
 		Bold(true).
-		Foreground(tint.BrightPurple()).
+		Foreground(tint.Purple()).
 		Padding(0, 1)
 
 	// Label styles
 	ActiveLabelStyle = lipgloss.NewStyle().
-		Foreground(tint.Cyan()).
+		Foreground(tint.White()).
 		Bold(true)
 
 	InactiveLabelStyle = lipgloss.NewStyle().
@@ -83,15 +95,15 @@ func init() {
 	// Button styles
 	ActiveButtonStyle = lipgloss.NewStyle().
 		Foreground(tint.Bg()).
-		Background(tint.Green()).
+		Background(tint.Purple()).
 		Bold(true)
 
 	InactiveButtonStyle = lipgloss.NewStyle().
-		Foreground(tint.Green())
+		Foreground(tint.Purple())
 
 	// Message styles (for chat messages)
 	UserMessageLabelStyle = lipgloss.NewStyle().
-		Foreground(tint.Blue()).
+		Foreground(tint.White()).
 		Bold(true)
 
 	AssistantMessageLabelStyle = lipgloss.NewStyle().
@@ -117,18 +129,59 @@ func init() {
 
 	// Spinner styles
 	SpinnerStyle = lipgloss.NewStyle().
-		Foreground(tint.BrightPurple())
+		Foreground(tint.Purple())
 
 	// Border styles
 	ViewportBorderStyle = lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(tint.BrightBlue()).
+		BorderForeground(tint.White()).
 		Padding(0, 1)
 
 	// Scroll indicator style
 	ScrollIndicatorStyle = lipgloss.NewStyle().
-		Foreground(tint.Cyan()).
+		Foreground(tint.White()).
 		Bold(false)
+
+	// File selector overlay styles
+	FileSelectorBorderStyle = lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(tint.Yellow()).
+		Padding(1, 2)
+
+	FileSelectorEmptyBorderStyle = lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(tint.Yellow()).
+		Padding(1, 2)
+
+	FileSelectorTitleStyle = lipgloss.NewStyle().
+		Foreground(tint.Yellow()).
+		Bold(true)
+
+	FileSelectorEmptyTitleStyle = lipgloss.NewStyle().
+		Foreground(tint.Yellow()).
+		Bold(true)
+
+	FileSelectorMessageStyle = lipgloss.NewStyle().
+		Foreground(tint.BrightBlack()).
+		Align(lipgloss.Center)
+
+	FileSelectorSelectedItemStyle = lipgloss.NewStyle().
+		Foreground(tint.Purple()).
+		Background(tint.BrightBlack()).
+		Bold(true)
+
+	FileSelectorNormalItemStyle = lipgloss.NewStyle().
+		Foreground(tint.Fg())
+
+	FileSelectorDimmedItemStyle = lipgloss.NewStyle().
+		Foreground(tint.BrightBlack())
+
+	FileSelectorFilterLabelStyle = lipgloss.NewStyle().
+		Foreground(tint.White()).
+		Bold(true)
+
+	FileSelectorFilterInputStyle = lipgloss.NewStyle().
+		Foreground(tint.Fg())
 }
 
 // Helper functions for dynamic styles
@@ -156,9 +209,9 @@ func ConfigureListStyles(l *list.Model) {
 
 	// Filter styles
 	l.Styles.FilterPrompt = lipgloss.NewStyle().
-		Foreground(tint.Cyan())
+		Foreground(tint.Yellow())
 	l.Styles.FilterCursor = lipgloss.NewStyle().
-		Foreground(tint.BrightPurple())
+		Foreground(tint.Purple())
 
 	// Status bar
 	l.Styles.StatusBar = lipgloss.NewStyle().
@@ -177,16 +230,16 @@ func CreateThemedDelegate() list.DefaultDelegate {
 
 	// Configure item styles
 	d.Styles.SelectedTitle = lipgloss.NewStyle().
-		Foreground(tint.BrightPurple()).
+		Foreground(tint.Purple()).
 		Bold(true).
 		BorderLeft(true).
-		BorderForeground(tint.BrightPurple()).
+		BorderForeground(tint.Purple()).
 		Padding(0, 0, 0, 1)
 
 	d.Styles.SelectedDesc = lipgloss.NewStyle().
-		Foreground(tint.Cyan()).
+		Foreground(tint.Yellow()).
 		BorderLeft(true).
-		BorderForeground(tint.BrightPurple()).
+		BorderForeground(tint.Purple()).
 		Padding(0, 0, 0, 1)
 
 	d.Styles.NormalTitle = lipgloss.NewStyle().
@@ -265,4 +318,48 @@ func GetTimestampStyle(width int) lipgloss.Style {
 	return TimestampStyle.
 		Align(lipgloss.Right).
 		Width(width - 10)
+}
+
+// GetFileSelectorBorderStyle returns border style with dynamic width
+func GetFileSelectorBorderStyle(width int, isEmpty bool) lipgloss.Style {
+	if isEmpty {
+		return FileSelectorEmptyBorderStyle.Width(width - 4)
+	}
+	return FileSelectorBorderStyle.Width(width - 4)
+}
+
+// GetFileSelectorTitleStyle returns title style based on state
+func GetFileSelectorTitleStyle(isEmpty bool) lipgloss.Style {
+	if isEmpty {
+		return FileSelectorEmptyTitleStyle
+	}
+	return FileSelectorTitleStyle
+}
+
+// GetFileSelectorItemStyle returns item style with dynamic width
+func GetFileSelectorItemStyle(width int, state string) lipgloss.Style {
+	baseWidth := width - 8
+	switch state {
+	case "selected":
+		return FileSelectorSelectedItemStyle.Width(baseWidth)
+	case "dimmed":
+		return FileSelectorDimmedItemStyle.Width(baseWidth)
+	default:
+		return FileSelectorNormalItemStyle.Width(baseWidth)
+	}
+}
+
+// GetFileSelectorMessageStyle returns message style with dynamic width
+func GetFileSelectorMessageStyle(width int) lipgloss.Style {
+	return FileSelectorMessageStyle.Width(width - 8)
+}
+
+// GetFileSelectorFilterLabelStyle returns the filter label style
+func GetFileSelectorFilterLabelStyle() lipgloss.Style {
+	return FileSelectorFilterLabelStyle
+}
+
+// GetFileSelectorFilterInputStyle returns the filter input style
+func GetFileSelectorFilterInputStyle() lipgloss.Style {
+	return FileSelectorFilterInputStyle
 }

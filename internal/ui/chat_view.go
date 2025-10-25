@@ -44,6 +44,7 @@ type ChatViewModel struct {
 	viewport        viewport.Model
 	textarea        textarea.Model
 	spinner         spinner.Model
+	fileSelector    FileSelectorOverlayModel
 	width           int
 	height          int
 	processingState ProcessingState
@@ -112,7 +113,7 @@ func NewChatViewModel(chat *vector.Chat, pipeline *rag.Pipeline, vectorStore vec
 	ta.KeyMap.Paste = key.NewBinding()
 
 	viewportHeight := height - titleHeight - textareaHeight - helpHeight - padding
-	vp := viewport.New(width-2, viewportHeight)
+	vp := viewport.New(width-6, viewportHeight)
 	vp.SetContent("")
 	vp.MouseWheelDelta = 2
 
@@ -130,18 +131,21 @@ func NewChatViewModel(chat *vector.Chat, pipeline *rag.Pipeline, vectorStore vec
 
 	ctx, cancel := context.WithCancel(context.Background())
 
+	fs := NewFileSelectorOverlayModel()
+
 	return ChatViewModel{
-		chat:        chat,
-		pipeline:    pipeline,
-		vectorStore: vectorStore,
-		viewport:    vp,
-		textarea:    ta,
-		spinner:     sp,
-		width:       width,
-		height:      height,
-		ctx:         ctx,
-		cancelFunc:  cancel,
-		lastRender:  time.Now(),
+		chat:         chat,
+		pipeline:     pipeline,
+		vectorStore:  vectorStore,
+		viewport:     vp,
+		textarea:     ta,
+		spinner:      sp,
+		fileSelector: fs,
+		width:        width,
+		height:       height,
+		ctx:          ctx,
+		cancelFunc:   cancel,
+		lastRender:   time.Now(),
 	}
 }
 
@@ -156,18 +160,59 @@ func (m ChatViewModel) Init() tea.Cmd {
 func (m ChatViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 
+	// Handle file selector closing and selection messages first
+	switch msg := msg.(type) {
+	case FileSelected:
+		// Insert filename at cursor position in textarea
+		currentValue := m.textarea.Value()
+		m.textarea.SetValue(currentValue + msg.FileName)
+		m.fileSelector.Hide()
+		m.textarea.Focus()
+		return m, nil
+
+	case FileSelectorClosed:
+		// Hide file selector and refocus textarea
+		m.fileSelector.Hide()
+		m.textarea.Focus()
+		return m, nil
+	}
+
+	// Handle file selector updates if visible
+	if m.fileSelector.IsVisible() {
+		cmd := m.fileSelector.UpdateFileSelector(msg)
+		if cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+		return m, tea.Batch(cmds...)
+	}
+
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
 		viewportHeight := msg.Height - titleHeight - textareaHeight - helpHeight - padding
-		m.viewport.Width = msg.Width - 2
+		m.viewport.Width = msg.Width - 6
 		m.viewport.Height = viewportHeight
 		m.textarea.SetWidth(msg.Width - 4)
+		m.fileSelector.UpdateSize(msg.Width, msg.Height)
 		return m, nil
 
 	case tea.KeyMsg:
 		switch msg.String() {
+		case "ctrl+f":
+			// Toggle file selector
+			if m.processingState == StateIdle {
+				if m.fileSelector.IsVisible() {
+					// Close if already open
+					m.fileSelector.Hide()
+					m.textarea.Focus()
+					return m, nil
+				}
+				// Open if closed
+				return m, m.loadAndShowFileSelector()
+			}
+			return m, nil
+
 		case "ctrl+x":
 			m.cancelFunc()
 			return m, tea.Quit
@@ -196,6 +241,11 @@ func (m ChatViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case MessagesLoaded:
 		m.messages = msg.Messages
 		m.renderMessages()
+		return m, nil
+
+	case DocumentsLoaded:
+		m.fileSelector.SetFiles(msg.Documents)
+		m.fileSelector.Show()
 		return m, nil
 
 	case StateChange:
@@ -333,10 +383,13 @@ func (m ChatViewModel) View() string {
 
 	b.WriteString(m.textarea.View() + "\n")
 
-	helpText := "Enter: Send • ↑/↓: Scroll • PgUp/PgDn: Page Scroll • Esc: Back • Ctrl+X: Exit"
+	helpText := "Enter: Send • Ctrl+F: Files • ↑/↓: Scroll • PgUp/PgDn: Page Scroll • Esc: Back • Ctrl+X: Exit"
 	b.WriteString(helpStyle.Render(helpText))
 
-	return b.String()
+	baseView := b.String()
+
+	// Render file selector overlay on top if visible using the overlay library
+	return m.fileSelector.RenderOverlay(baseView)
 }
 
 func (m *ChatViewModel) addUserMessage(content string) {
@@ -495,6 +548,22 @@ func (m ChatViewModel) renderScrollIndicator() string {
 	return ScrollIndicatorStyle.Render(indicator)
 }
 
+func (m ChatViewModel) loadAndShowFileSelector() tea.Cmd {
+	return func() tea.Msg {
+		docs, err := m.vectorStore.GetDocuments(context.Background())
+		if err != nil {
+			logging.Error("Failed to load documents for file selector: %v", err)
+			return FileSelectorClosed{}
+		}
+
+		return DocumentsLoaded{Documents: docs}
+	}
+}
+
 type MessagesLoaded struct {
 	Messages []vector.Message
+}
+
+type DocumentsLoaded struct {
+	Documents []vector.Document
 }

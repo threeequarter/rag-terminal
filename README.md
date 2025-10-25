@@ -2,6 +2,8 @@
 
 A Go-based RAG (Retrieval-Augmented Generation) chat application with a Bubbletea TUI interface, utilizing local Nexa SDK models and BadgerDB for vector storage.
 
+![demo.gif](media%2Fdemo.gif)
+
 ## Features
 
 - **Interactive TUI**: Built with Bubbletea for a clean terminal interface

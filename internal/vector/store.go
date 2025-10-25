@@ -34,6 +34,9 @@ type VectorStore interface {
 	// DeleteChat deletes a chat directory and all its data
 	DeleteChat(ctx context.Context, chatID string) error
 
+	// GetDocuments retrieves all documents for the currently open chat
+	GetDocuments(ctx context.Context) ([]Document, error)
+
 	// Close closes any open database connection and cleans up resources
 	Close() error
 }

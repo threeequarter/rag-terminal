@@ -8,7 +8,9 @@ require (
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/dgraph-io/badger/v4 v4.8.0
 	github.com/google/uuid v1.6.0
-	golang.org/x/text v0.26.0
+	github.com/lrstanley/bubbletint v1.0.0
+	github.com/rmhubbert/bubbletea-overlay v0.4.4
+	golang.org/x/text v0.27.0
 )
 
 require (
@@ -27,7 +29,6 @@ require (
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/google/flatbuffers v25.2.10+incompatible // indirect
 	github.com/klauspost/compress v1.18.0 // indirect
-	github.com/lrstanley/bubbletint v1.0.0 // indirect
 	github.com/lucasb-eyer/go-colorful v1.3.0 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/mattn/go-localereader v0.0.1 // indirect
