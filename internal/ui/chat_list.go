@@ -49,11 +49,13 @@ func NewChatListModel(chats []vector.Chat, width, height int) ChatListModel {
 		items[i] = chatItem{chat: c}
 	}
 
-	l := list.New(items, list.NewDefaultDelegate(), width, height-4)
+	delegate := CreateThemedDelegate()
+	l := list.New(items, delegate, width, height-4)
 	l.Title = "Chat Conversations"
 	l.SetShowStatusBar(true)
 	l.SetFilteringEnabled(true)
 	l.SetShowHelp(false)
+	ConfigureListStyles(&l)
 
 	// Disable all built-in key bindings except arrows and filter
 	l.KeyMap.CursorUp = key.NewBinding(key.WithKeys("up"))

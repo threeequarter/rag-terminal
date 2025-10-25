@@ -9,7 +9,6 @@ import (
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 
 	"rag-terminal/internal/vector"
 )
@@ -188,60 +187,35 @@ func (m ChatCreateModel) View() string {
 
 	var b strings.Builder
 
-	title := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(lipgloss.Color("205")).
-		Render("Create New Chat")
-
+	title := TitleStyle.Render("Create New Chat")
 	b.WriteString(title + "\n\n")
 
 	// Name field
-	nameLabel := "Chat Name:"
-	if m.currentField == fieldName {
-		nameLabel = lipgloss.NewStyle().Foreground(lipgloss.Color("12")).Bold(true).Render(nameLabel)
-	}
-	b.WriteString(nameLabel + "\n")
+	b.WriteString(RenderFieldLabel("Chat Name:", m.currentField == fieldName) + "\n")
 	b.WriteString(m.nameInput.View() + "\n\n")
 
 	// System prompt field
-	promptLabel := "System Prompt:"
-	if m.currentField == fieldSystemPrompt {
-		promptLabel = lipgloss.NewStyle().Foreground(lipgloss.Color("12")).Bold(true).Render(promptLabel)
-	}
-	b.WriteString(promptLabel + "\n")
+	b.WriteString(RenderFieldLabel("System Prompt:", m.currentField == fieldSystemPrompt) + "\n")
 	b.WriteString(m.systemPromptArea.View() + "\n\n")
 
 	// Temperature field
-	tempLabel := "Temperature (0-2):"
-	if m.currentField == fieldTemperature {
-		tempLabel = lipgloss.NewStyle().Foreground(lipgloss.Color("12")).Bold(true).Render(tempLabel)
-	}
-	b.WriteString(tempLabel + "\n")
+	b.WriteString(RenderFieldLabel("Temperature (0-2):", m.currentField == fieldTemperature) + "\n")
 	b.WriteString(m.temperatureInput.View() + "\n")
 	if m.temperatureError != "" {
-		errorMsg := lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Render("  ✗ " + m.temperatureError)
-		b.WriteString(errorMsg + "\n")
+		b.WriteString(RenderError(m.temperatureError) + "\n")
 	}
 	b.WriteString("\n")
 
 	// TopK field
-	topKLabel := "Top K (1-100):"
-	if m.currentField == fieldTopK {
-		topKLabel = lipgloss.NewStyle().Foreground(lipgloss.Color("12")).Bold(true).Render(topKLabel)
-	}
-	b.WriteString(topKLabel + "\n")
+	b.WriteString(RenderFieldLabel("Top K (1-100):", m.currentField == fieldTopK) + "\n")
 	b.WriteString(m.topKInput.View() + "\n")
 	if m.topKError != "" {
-		errorMsg := lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Render("  ✗ " + m.topKError)
-		b.WriteString(errorMsg + "\n")
+		b.WriteString(RenderError(m.topKError) + "\n")
 	}
 	b.WriteString("\n")
 
 	// LLM Reranking checkbox
-	rerankLabel := "Use LLM Reranking:"
-	if m.currentField == fieldReranking {
-		rerankLabel = lipgloss.NewStyle().Foreground(lipgloss.Color("12")).Bold(true).Render(rerankLabel)
-	}
+	rerankLabel := RenderFieldLabel("Use LLM Reranking:", m.currentField == fieldReranking)
 	checkbox := "[ ]"
 	if m.rerankingEnabled {
 		checkbox = "[✓]"
@@ -249,24 +223,12 @@ func (m ChatCreateModel) View() string {
 	b.WriteString(rerankLabel + " " + checkbox + "\n\n")
 
 	// Model info
-	modelInfo := lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Render(
+	modelInfo := MetadataStyle.Render(
 		fmt.Sprintf("LLM: %s | Embed: %s", m.llmModel, m.embedModel))
 	b.WriteString(modelInfo + "\n\n")
 
 	// Create button
-	createButton := "[ Create ]"
-	if m.currentField == fieldCreateButton {
-		createButton = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("0")).
-			Background(lipgloss.Color("205")).
-			Bold(true).
-			Render(" Create ")
-	} else {
-		createButton = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("205")).
-			Render("[ Create ]")
-	}
-	b.WriteString(createButton + "\n\n")
+	b.WriteString(RenderButton("Create", m.currentField == fieldCreateButton) + "\n\n")
 
 	helpText := "Tab/Shift+Tab: Navigate • Enter: Next/Create • Space: Toggle • Esc: Back • Ctrl+X: Exit"
 	b.WriteString(helpStyle.Render(helpText))

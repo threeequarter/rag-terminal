@@ -60,11 +60,13 @@ func NewModelSelectModel(models []nexa.Model, width, height int) ModelSelectMode
 		items[i] = modelItem{model: m}
 	}
 
-	l := list.New(items, list.NewDefaultDelegate(), width, height-4)
+	delegate := CreateThemedDelegate()
+	l := list.New(items, delegate, width, height-4)
 	l.Title = "Select LLM Model"
 	l.SetShowHelp(false)
 	l.SetShowStatusBar(false)
 	l.SetFilteringEnabled(false)
+	ConfigureListStyles(&l)
 
 	// Disable all built-in key bindings except arrows
 	l.KeyMap.CursorUp = key.NewBinding(key.WithKeys("up"))
@@ -127,6 +129,7 @@ func (m ModelSelectModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				m.list.SetItems(items)
 				m.list.Title = "Select Embedding Model"
+				ConfigureListStyles(&m.list)
 				return m, nil
 			} else if m.state == selectingEmbedding {
 				// Save embedding selection and complete
@@ -149,6 +152,7 @@ func (m ModelSelectModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				m.list.SetItems(items)
 				m.list.Title = "Select LLM Model"
+				ConfigureListStyles(&m.list)
 				return m, nil
 			}
 		}
@@ -183,18 +187,3 @@ func (m ModelSelectModel) View() string {
 		helpStyle.Render(helpText),
 	)
 }
-
-var (
-	errorStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("9")).
-			Bold(true).
-			Padding(1)
-
-	statusBarStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("241")).
-			Padding(0, 1)
-
-	helpStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("241")).
-			Padding(1, 0, 0, 1)
-)

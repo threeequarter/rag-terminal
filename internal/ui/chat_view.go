@@ -11,7 +11,6 @@ import (
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 
 	"rag-terminal/internal/document"
 	"rag-terminal/internal/logging"
@@ -87,7 +86,7 @@ type StateTransitionMsg struct{}
 
 func NewChatViewModel(chat *vector.Chat, pipeline *rag.Pipeline, vectorStore vector.VectorStore, width, height int) ChatViewModel {
 	ta := textarea.New()
-	ta.Placeholder = "Type your message..."
+	ta.Placeholder = "Type your message, drop file or folder..."
 	ta.Focus()
 	ta.CharLimit = 2000
 	ta.SetWidth(width - 4)
@@ -127,7 +126,7 @@ func NewChatViewModel(chat *vector.Chat, pipeline *rag.Pipeline, vectorStore vec
 
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
-	sp.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("205"))
+	sp.Style = SpinnerStyle
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -297,11 +296,7 @@ func (m ChatViewModel) View() string {
 
 	var b strings.Builder
 
-	title := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(lipgloss.Color("205")).
-		Padding(0, 1).
-		Render(m.chat.Name)
+	title := TitleWithPaddingStyle.Render(m.chat.Name)
 	b.WriteString(title + "\n")
 
 	status := fmt.Sprintf("Model: %s | LLM reranking: %s | Temp: %.1f | TopK: %d",
@@ -326,12 +321,7 @@ func (m ChatViewModel) View() string {
 
 	b.WriteString(statusBarStyle.Render(status) + "\n\n")
 
-	viewportWithBorder := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("62")).
-		Padding(0, 1).
-		Render(m.viewport.View())
-
+	viewportWithBorder := RenderViewportWithBorder(m.viewport.View())
 	b.WriteString(viewportWithBorder)
 	b.WriteString("\n")
 
@@ -458,36 +448,15 @@ func (m *ChatViewModel) renderMessages() {
 	for _, msg := range m.messages {
 		if msg.Role == "user" {
 			timestamp := msg.Timestamp.Format("15:04:05")
-			label := lipgloss.NewStyle().
-				Foreground(lipgloss.Color("12")).
-				Bold(true).
-				Render("You:")
+			label := UserMessageLabelStyle.Render("You:")
 
-			b.WriteString(lipgloss.NewStyle().
-				Foreground(lipgloss.Color("231")).
-				Padding(0, 1).
-				MarginBottom(1).
-				Width(m.width - 10).
-				Align(lipgloss.Right).
-				Render(label + "\n" + msg.Content))
-			b.WriteString(lipgloss.NewStyle().
-				Foreground(lipgloss.Color("241")).
-				Align(lipgloss.Right).
-				Width(m.width - 10).
-				Render(timestamp))
+			b.WriteString(GetUserMessageContentStyle(m.width).Render(label + "\n" + msg.Content))
+			b.WriteString(GetTimestampStyle(m.width).Render(timestamp))
 			b.WriteString("\n\n")
 		} else {
-			label := lipgloss.NewStyle().
-				Foreground(lipgloss.Color("205")).
-				Bold(true).
-				Render("Assistant:")
+			label := AssistantMessageLabelStyle.Render("Assistant:")
 
-			b.WriteString(lipgloss.NewStyle().
-				Foreground(lipgloss.Color("231")).
-				Padding(0, 1).
-				MarginBottom(1).
-				Width(m.width - 10).
-				Render(label + "\n" + msg.Content))
+			b.WriteString(GetAssistantMessageContentStyle(m.width).Render(label + "\n" + msg.Content))
 			b.WriteString("\n\n")
 		}
 	}
@@ -523,10 +492,7 @@ func (m ChatViewModel) renderScrollIndicator() string {
 	scrollPercent := int(m.viewport.ScrollPercent() * 100)
 	indicator := fmt.Sprintf("Scroll: %d%% ↕", scrollPercent)
 
-	return lipgloss.NewStyle().
-		Foreground(lipgloss.Color("62")).
-		Bold(false).
-		Render(indicator)
+	return ScrollIndicatorStyle.Render(indicator)
 }
 
 type MessagesLoaded struct {
