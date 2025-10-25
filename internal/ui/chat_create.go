@@ -22,20 +22,24 @@ const (
 	fieldTemperature
 	fieldTopK
 	fieldReranking
+	fieldCreateButton
 )
 
 type ChatCreateModel struct {
-	nameInput        textinput.Model
-	systemPromptArea textarea.Model
-	temperatureInput textinput.Model
-	topKInput        textinput.Model
-	rerankingEnabled bool
-	currentField     chatCreateField
-	llmModel         string
-	embedModel       string
-	width            int
-	height           int
-	err              error
+	nameInput           textinput.Model
+	systemPromptArea    textarea.Model
+	temperatureInput    textinput.Model
+	topKInput           textinput.Model
+	rerankingEnabled    bool
+	currentField        chatCreateField
+	llmModel            string
+	embedModel          string
+	width               int
+	height              int
+	err                 error
+	temperatureError    string
+	topKError           string
+	validationAttempted bool
 }
 
 type ChatCreated struct {
@@ -57,11 +61,13 @@ func NewChatCreateModel(llmModel, embedModel string, width, height int) ChatCrea
 
 	tempInput := textinput.New()
 	tempInput.Placeholder = "0.7"
+	tempInput.SetValue("0.7")
 	tempInput.CharLimit = 4
 	tempInput.Width = 10
 
 	topKInput := textinput.New()
 	topKInput.Placeholder = "5"
+	topKInput.SetValue("5")
 	topKInput.CharLimit = 3
 	topKInput.Width = 10
 
@@ -95,6 +101,12 @@ func (m ChatCreateModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 		return m, nil
 
+	case ValidationFailed:
+		m.temperatureError = msg.TemperatureError
+		m.topKError = msg.TopKError
+		m.validationAttempted = true
+		return m, nil
+
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "ctrl+c", "ctrl+x":
@@ -121,10 +133,12 @@ func (m ChatCreateModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, cmd
 			}
 
-			// Submit on enter from other fields
-			if m.currentField == fieldReranking {
+			// Create chat only when on Create button
+			if m.currentField == fieldCreateButton {
 				return m, m.createChat()
 			}
+
+			// Move to next field for all other fields
 			m.nextField()
 			return m, nil
 
@@ -150,10 +164,18 @@ func (m ChatCreateModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		m.temperatureInput, cmd = m.temperatureInput.Update(msg)
 		cmds = append(cmds, cmd)
+		// Clear temperature error when user types
+		if m.validationAttempted {
+			m.temperatureError = ""
+		}
 	case fieldTopK:
 		var cmd tea.Cmd
 		m.topKInput, cmd = m.topKInput.Update(msg)
 		cmds = append(cmds, cmd)
+		// Clear topK error when user types
+		if m.validationAttempted {
+			m.topKError = ""
+		}
 	}
 
 	return m, tea.Batch(cmds...)
@@ -168,7 +190,7 @@ func (m ChatCreateModel) View() string {
 
 	title := lipgloss.NewStyle().
 		Bold(true).
-		Foreground(lipgloss.Color("10")).
+		Foreground(lipgloss.Color("205")).
 		Render("Create New Chat")
 
 	b.WriteString(title + "\n\n")
@@ -190,20 +212,30 @@ func (m ChatCreateModel) View() string {
 	b.WriteString(m.systemPromptArea.View() + "\n\n")
 
 	// Temperature field
-	tempLabel := "Temperature (0-1):"
+	tempLabel := "Temperature (0-2):"
 	if m.currentField == fieldTemperature {
 		tempLabel = lipgloss.NewStyle().Foreground(lipgloss.Color("12")).Bold(true).Render(tempLabel)
 	}
 	b.WriteString(tempLabel + "\n")
-	b.WriteString(m.temperatureInput.View() + "\n\n")
+	b.WriteString(m.temperatureInput.View() + "\n")
+	if m.temperatureError != "" {
+		errorMsg := lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Render("  ✗ " + m.temperatureError)
+		b.WriteString(errorMsg + "\n")
+	}
+	b.WriteString("\n")
 
 	// TopK field
-	topKLabel := "Top K (retrieval count):"
+	topKLabel := "Top K (1-100):"
 	if m.currentField == fieldTopK {
 		topKLabel = lipgloss.NewStyle().Foreground(lipgloss.Color("12")).Bold(true).Render(topKLabel)
 	}
 	b.WriteString(topKLabel + "\n")
-	b.WriteString(m.topKInput.View() + "\n\n")
+	b.WriteString(m.topKInput.View() + "\n")
+	if m.topKError != "" {
+		errorMsg := lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Render("  ✗ " + m.topKError)
+		b.WriteString(errorMsg + "\n")
+	}
+	b.WriteString("\n")
 
 	// LLM Reranking checkbox
 	rerankLabel := "Use LLM Reranking:"
@@ -221,7 +253,22 @@ func (m ChatCreateModel) View() string {
 		fmt.Sprintf("LLM: %s | Embed: %s", m.llmModel, m.embedModel))
 	b.WriteString(modelInfo + "\n\n")
 
-	helpText := "Tab/Shift+Tab: Navigate • Enter: Create • Space: Toggle • Esc: Cancel"
+	// Create button
+	createButton := "[ Create ]"
+	if m.currentField == fieldCreateButton {
+		createButton = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("0")).
+			Background(lipgloss.Color("205")).
+			Bold(true).
+			Render(" Create ")
+	} else {
+		createButton = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("205")).
+			Render("[ Create ]")
+	}
+	b.WriteString(createButton + "\n\n")
+
+	helpText := "Tab/Shift+Tab: Navigate • Enter: Next/Create • Space: Toggle • Esc: Cancel"
 	b.WriteString(helpStyle.Render(helpText))
 
 	return b.String()
@@ -229,7 +276,7 @@ func (m ChatCreateModel) View() string {
 
 func (m *ChatCreateModel) nextField() {
 	m.currentField++
-	if m.currentField > fieldReranking {
+	if m.currentField > fieldCreateButton {
 		m.currentField = fieldName
 	}
 	m.updateFocus()
@@ -238,7 +285,7 @@ func (m *ChatCreateModel) nextField() {
 func (m *ChatCreateModel) prevField() {
 	m.currentField--
 	if m.currentField < fieldName {
-		m.currentField = fieldReranking
+		m.currentField = fieldCreateButton
 	}
 	m.updateFocus()
 }
@@ -261,9 +308,56 @@ func (m *ChatCreateModel) updateFocus() {
 	}
 }
 
+type ValidationFailed struct {
+	TemperatureError string
+	TopKError        string
+}
+
 func (m ChatCreateModel) createChat() tea.Cmd {
 	return func() tea.Msg {
-		// Validate and parse inputs
+		// Validate temperature
+		var temperatureError, topKError string
+		var temperature float64
+		var topK int
+
+		tempValue := m.temperatureInput.Value()
+		if tempValue == "" {
+			temperatureError = "Temperature is required"
+		} else {
+			temp, err := strconv.ParseFloat(tempValue, 64)
+			if err != nil {
+				temperatureError = "Temperature must be a number"
+			} else if temp < 0 || temp > 2 {
+				temperatureError = "Temperature must be between 0 and 2"
+			} else {
+				temperature = temp
+			}
+		}
+
+		// Validate TopK
+		topKValue := m.topKInput.Value()
+		if topKValue == "" {
+			topKError = "TopK is required"
+		} else {
+			k, err := strconv.Atoi(topKValue)
+			if err != nil {
+				topKError = "TopK must be an integer"
+			} else if k < 1 || k > 100 {
+				topKError = "TopK must be between 1 and 100"
+			} else {
+				topK = k
+			}
+		}
+
+		// If validation failed, return validation errors
+		if temperatureError != "" || topKError != "" {
+			return ValidationFailed{
+				TemperatureError: temperatureError,
+				TopKError:        topKError,
+			}
+		}
+
+		// Validation passed, create chat
 		name := m.nameInput.Value()
 		if name == "" {
 			name = "Untitled Chat"
@@ -272,24 +366,6 @@ func (m ChatCreateModel) createChat() tea.Cmd {
 		systemPrompt := m.systemPromptArea.Value()
 		if systemPrompt == "" {
 			systemPrompt = "You are a helpful assistant."
-		}
-
-		temperature := 0.7
-		if m.temperatureInput.Value() != "" {
-			if temp, err := strconv.ParseFloat(m.temperatureInput.Value(), 64); err == nil {
-				if temp >= 0 && temp <= 1 {
-					temperature = temp
-				}
-			}
-		}
-
-		topK := 5
-		if m.topKInput.Value() != "" {
-			if k, err := strconv.Atoi(m.topKInput.Value()); err == nil {
-				if k > 0 {
-					topK = k
-				}
-			}
 		}
 
 		chat := &vector.Chat{

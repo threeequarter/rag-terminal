@@ -208,7 +208,7 @@ func (m ChatViewModel) View() string {
 		Render(m.chat.Name)
 	b.WriteString(title + "\n")
 
-	status := fmt.Sprintf("Model: %s | RAG: %s | Temp: %.1f | TopK: %d",
+	status := fmt.Sprintf("Model: %s | LLM reranking: %s | Temp: %.1f | TopK: %d",
 		m.chat.LLMModel,
 		map[bool]string{true: "ON", false: "OFF"}[m.chat.UseReranking],
 		m.chat.Temperature,
