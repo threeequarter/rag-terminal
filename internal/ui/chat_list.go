@@ -3,6 +3,7 @@ package ui
 import (
 	"fmt"
 
+	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -48,6 +49,23 @@ func NewChatListModel(chats []vector.Chat, width, height int) ChatListModel {
 	l.Title = "Chat Conversations"
 	l.SetShowStatusBar(true)
 	l.SetFilteringEnabled(true)
+	l.SetShowHelp(false)
+
+	// Disable all built-in key bindings except arrows and filter
+	l.KeyMap.CursorUp = key.NewBinding(key.WithKeys("up"))
+	l.KeyMap.CursorDown = key.NewBinding(key.WithKeys("down"))
+	l.KeyMap.NextPage = key.NewBinding()
+	l.KeyMap.PrevPage = key.NewBinding()
+	l.KeyMap.GoToStart = key.NewBinding()
+	l.KeyMap.GoToEnd = key.NewBinding()
+	l.KeyMap.Filter = key.NewBinding(key.WithKeys("/"))
+	l.KeyMap.ClearFilter = key.NewBinding(key.WithKeys("esc"))
+	l.KeyMap.CancelWhileFiltering = key.NewBinding(key.WithKeys("esc"))
+	l.KeyMap.AcceptWhileFiltering = key.NewBinding(key.WithKeys("enter"))
+	l.KeyMap.ShowFullHelp = key.NewBinding()
+	l.KeyMap.CloseFullHelp = key.NewBinding()
+	l.KeyMap.Quit = key.NewBinding()
+	l.KeyMap.ForceQuit = key.NewBinding()
 
 	return ChatListModel{
 		list:   l,
@@ -71,7 +89,7 @@ func (m ChatListModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyMsg:
 		switch msg.String() {
-		case "ctrl+c", "ctrl+x":
+		case "ctrl+x":
 			return m, tea.Quit
 
 		case "enter":
@@ -84,12 +102,12 @@ func (m ChatListModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return ChatSelected{Chat: chat}
 			}
 
-		case "ctrl+n", "n":
+		case "ctrl+n":
 			return m, func() tea.Msg {
 				return CreateNewChat{}
 			}
 
-		case "ctrl+d", "d":
+		case "ctrl+d":
 			selectedItem := m.list.SelectedItem()
 			if selectedItem == nil {
 				return m, nil
@@ -108,10 +126,10 @@ func (m ChatListModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m ChatListModel) View() string {
 	if m.err != nil {
-		return errorStyle.Render(fmt.Sprintf("Error: %v\n\nPress Ctrl+C to quit", m.err))
+		return errorStyle.Render(fmt.Sprintf("Error: %v\n\nPress Ctrl+X to exit", m.err))
 	}
 
-	helpText := "↑/↓: Navigate • Enter: Open • N: New Chat • D: Delete • Ctrl+X: Quit"
+	helpText := "↑/↓: Navigate • Enter: Open • /: Filter • Ctrl+N: New Chat • Ctrl+D: Delete • Ctrl+X: Exit"
 
 	return lipgloss.JoinVertical(lipgloss.Left,
 		m.list.View(),

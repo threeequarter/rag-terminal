@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
@@ -27,25 +28,36 @@ const (
 	gotoBottomEvery = 100
 )
 
+type ProcessingState int
+
+const (
+	StateIdle ProcessingState = iota
+	StateEmbedding
+	StateReranking
+	StateThinking
+)
+
 type ChatViewModel struct {
-	chat         *vector.Chat
-	pipeline     *rag.Pipeline
-	vectorStore  vector.VectorStore
-	messages     []vector.Message
-	viewport     viewport.Model
-	textarea     textarea.Model
-	spinner      spinner.Model
-	width        int
-	height       int
-	isThinking   bool
-	err          error
-	ctx          context.Context
-	cancelFunc   context.CancelFunc
-	streamChan   <-chan string
-	errChan      <-chan error
-	streamBuffer strings.Builder
-	lastRender   time.Time
-	tokenCount   int
+	chat            *vector.Chat
+	pipeline        *rag.Pipeline
+	vectorStore     vector.VectorStore
+	messages        []vector.Message
+	viewport        viewport.Model
+	textarea        textarea.Model
+	spinner         spinner.Model
+	width           int
+	height          int
+	processingState ProcessingState
+	embeddedFiles   int
+	totalFiles      int
+	err             error
+	ctx             context.Context
+	cancelFunc      context.CancelFunc
+	streamChan      <-chan string
+	errChan         <-chan error
+	streamBuffer    strings.Builder
+	lastRender      time.Time
+	tokenCount      int
 }
 
 type ChatMessageReceived struct {
@@ -60,7 +72,18 @@ type ChatResponseError struct {
 	Err error
 }
 
+type StateChange struct {
+	State ProcessingState
+}
+
+type FileEmbeddingProgress struct {
+	Embedded int
+	Total    int
+}
+
 type RenderTickMsg struct{}
+
+type StateTransitionMsg struct{}
 
 func NewChatViewModel(chat *vector.Chat, pipeline *rag.Pipeline, vectorStore vector.VectorStore, width, height int) ChatViewModel {
 	ta := textarea.New()
@@ -71,10 +94,36 @@ func NewChatViewModel(chat *vector.Chat, pipeline *rag.Pipeline, vectorStore vec
 	ta.SetHeight(3)
 	ta.ShowLineNumbers = false
 
+	// Configure textarea key bindings - keep only essential editing keys
+	ta.KeyMap.CharacterForward = key.NewBinding(key.WithKeys("right"))
+	ta.KeyMap.CharacterBackward = key.NewBinding(key.WithKeys("left"))
+	ta.KeyMap.LineStart = key.NewBinding(key.WithKeys("home"))
+	ta.KeyMap.LineEnd = key.NewBinding(key.WithKeys("end"))
+	ta.KeyMap.DeleteCharacterBackward = key.NewBinding(key.WithKeys("backspace"))
+	ta.KeyMap.DeleteCharacterForward = key.NewBinding(key.WithKeys("delete"))
+	ta.KeyMap.LineNext = key.NewBinding()
+	ta.KeyMap.LinePrevious = key.NewBinding()
+	ta.KeyMap.WordForward = key.NewBinding()
+	ta.KeyMap.WordBackward = key.NewBinding()
+	ta.KeyMap.DeleteWordBackward = key.NewBinding()
+	ta.KeyMap.DeleteWordForward = key.NewBinding()
+	ta.KeyMap.DeleteAfterCursor = key.NewBinding()
+	ta.KeyMap.DeleteBeforeCursor = key.NewBinding()
+	ta.KeyMap.InsertNewline = key.NewBinding()
+	ta.KeyMap.Paste = key.NewBinding()
+
 	viewportHeight := height - titleHeight - textareaHeight - helpHeight - padding
 	vp := viewport.New(width-2, viewportHeight)
 	vp.SetContent("")
 	vp.MouseWheelDelta = 2
+
+	// Configure viewport key bindings - keep arrows and page up/down
+	vp.KeyMap.Down = key.NewBinding(key.WithKeys("down"))
+	vp.KeyMap.Up = key.NewBinding(key.WithKeys("up"))
+	vp.KeyMap.PageDown = key.NewBinding(key.WithKeys("pgdown"))
+	vp.KeyMap.PageUp = key.NewBinding(key.WithKeys("pgup"))
+	vp.KeyMap.HalfPageDown = key.NewBinding()
+	vp.KeyMap.HalfPageUp = key.NewBinding()
 
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
@@ -120,7 +169,7 @@ func (m ChatViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyMsg:
 		switch msg.String() {
-		case "ctrl+c", "ctrl+x":
+		case "ctrl+x":
 			m.cancelFunc()
 			return m, tea.Quit
 
@@ -130,18 +179,18 @@ func (m ChatViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return BackToChatList{}
 			}
 
-		case "ctrl+f":
-			return m, nil
-
 		case "enter":
-			if !m.isThinking && m.textarea.Value() != "" {
+			if m.processingState == StateIdle && m.textarea.Value() != "" {
 				userMessage := m.textarea.Value()
 				m.textarea.Reset()
-				m.isThinking = true
+				m.processingState = StateEmbedding
 
 				m.addUserMessage(userMessage)
 
-				return m, m.sendMessage(userMessage)
+				return m, tea.Batch(
+					m.sendMessage(userMessage),
+					m.scheduleStateTransition(),
+				)
 			}
 		}
 
@@ -150,7 +199,50 @@ func (m ChatViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.renderMessages()
 		return m, nil
 
+	case StateChange:
+		m.processingState = msg.State
+		return m, nil
+
+	case FileEmbeddingProgress:
+		m.embeddedFiles = msg.Embedded
+		m.totalFiles = msg.Total
+		return m, nil
+
+	case StateTransitionMsg:
+		// Auto-transition from Embedding to Reranking if appropriate
+		if m.processingState == StateEmbedding && m.chat.UseReranking {
+			m.processingState = StateReranking
+		}
+		return m, nil
+
 	case ChatMessageReceived:
+		// Check if this is a progress token
+		if strings.HasPrefix(msg.Token, "@@PROGRESS:") && strings.HasSuffix(msg.Token, "@@") {
+			// Parse progress: @@PROGRESS:X/Y@@
+			progressStr := strings.TrimPrefix(msg.Token, "@@PROGRESS:")
+			progressStr = strings.TrimSuffix(progressStr, "@@")
+			parts := strings.Split(progressStr, "/")
+			if len(parts) == 2 {
+				var embedded, total int
+				fmt.Sscanf(parts[0], "%d", &embedded)
+				fmt.Sscanf(parts[1], "%d", &total)
+				return m, tea.Batch(
+					waitForStreamToken(msg.StreamChan, msg.ErrChan),
+					func() tea.Msg {
+						return FileEmbeddingProgress{
+							Embedded: embedded,
+							Total:    total,
+						}
+					},
+				)
+			}
+		}
+
+		// Transition to thinking state when we start receiving tokens
+		if m.processingState != StateThinking {
+			m.processingState = StateThinking
+		}
+
 		m.streamBuffer.WriteString(msg.Token)
 		m.tokenCount++
 
@@ -163,16 +255,20 @@ func (m ChatViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case ChatResponseComplete:
 		m.flushStreamBuffer()
-		m.isThinking = false
+		m.processingState = StateIdle
 		m.streamBuffer.Reset()
 		m.tokenCount = 0
+		m.embeddedFiles = 0
+		m.totalFiles = 0
 		return m, nil
 
 	case ChatResponseError:
 		m.err = msg.Err
-		m.isThinking = false
+		m.processingState = StateIdle
 		m.streamBuffer.Reset()
 		m.tokenCount = 0
+		m.embeddedFiles = 0
+		m.totalFiles = 0
 		return m, nil
 
 	case spinner.TickMsg:
@@ -181,7 +277,7 @@ func (m ChatViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 
-	if !m.isThinking {
+	if m.processingState == StateIdle {
 		var cmd tea.Cmd
 		m.textarea, cmd = m.textarea.Update(msg)
 		cmds = append(cmds, cmd)
@@ -214,9 +310,20 @@ func (m ChatViewModel) View() string {
 		m.chat.Temperature,
 		m.chat.TopK,
 	)
-	if m.isThinking {
+
+	switch m.processingState {
+	case StateEmbedding:
+		if m.totalFiles > 0 {
+			status += fmt.Sprintf(" | %s Embedding (%d/%d files)...", m.spinner.View(), m.embeddedFiles, m.totalFiles)
+		} else {
+			status += " | " + m.spinner.View() + " Embedding..."
+		}
+	case StateReranking:
+		status += " | " + m.spinner.View() + " Reranking..."
+	case StateThinking:
 		status += " | " + m.spinner.View() + " Thinking..."
 	}
+
 	b.WriteString(statusBarStyle.Render(status) + "\n\n")
 
 	viewportWithBorder := lipgloss.NewStyle().
@@ -236,7 +343,7 @@ func (m ChatViewModel) View() string {
 
 	b.WriteString(m.textarea.View() + "\n")
 
-	helpText := "Enter: Send • Ctrl+F: Files • Esc: Back to List • Ctrl+X: Quit"
+	helpText := "Enter: Send • ↑/↓: Scroll • PgUp/PgDn: Page Scroll • Esc: Back • Ctrl+X: Exit"
 	b.WriteString(helpStyle.Render(helpText))
 
 	return b.String()
@@ -337,6 +444,12 @@ func (m ChatViewModel) loadMessages() tea.Cmd {
 		}
 		return MessagesLoaded{Messages: messages}
 	}
+}
+
+func (m ChatViewModel) scheduleStateTransition() tea.Cmd {
+	return tea.Tick(800*time.Millisecond, func(t time.Time) tea.Msg {
+		return StateTransitionMsg{}
+	})
 }
 
 func (m *ChatViewModel) renderMessages() {

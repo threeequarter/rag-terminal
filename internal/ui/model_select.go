@@ -3,6 +3,7 @@ package ui
 import (
 	"fmt"
 
+	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -61,8 +62,25 @@ func NewModelSelectModel(models []nexa.Model, width, height int) ModelSelectMode
 
 	l := list.New(items, list.NewDefaultDelegate(), width, height-4)
 	l.Title = "Select LLM Model"
-	l.SetShowStatusBar(true)
-	l.SetFilteringEnabled(true)
+	l.SetShowHelp(false)
+	l.SetShowStatusBar(false)
+	l.SetFilteringEnabled(false)
+
+	// Disable all built-in key bindings except arrows
+	l.KeyMap.CursorUp = key.NewBinding(key.WithKeys("up"))
+	l.KeyMap.CursorDown = key.NewBinding(key.WithKeys("down"))
+	l.KeyMap.NextPage = key.NewBinding()
+	l.KeyMap.PrevPage = key.NewBinding()
+	l.KeyMap.GoToStart = key.NewBinding()
+	l.KeyMap.GoToEnd = key.NewBinding()
+	l.KeyMap.Filter = key.NewBinding()
+	l.KeyMap.ClearFilter = key.NewBinding()
+	l.KeyMap.CancelWhileFiltering = key.NewBinding()
+	l.KeyMap.AcceptWhileFiltering = key.NewBinding()
+	l.KeyMap.ShowFullHelp = key.NewBinding()
+	l.KeyMap.CloseFullHelp = key.NewBinding()
+	l.KeyMap.Quit = key.NewBinding()
+	l.KeyMap.ForceQuit = key.NewBinding()
 
 	return ModelSelectModel{
 		list:        l,
@@ -88,7 +106,7 @@ func (m ModelSelectModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyMsg:
 		switch msg.String() {
-		case "ctrl+c", "ctrl+x":
+		case "ctrl+x":
 			return m, tea.Quit
 
 		case "enter":
@@ -143,12 +161,12 @@ func (m ModelSelectModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m ModelSelectModel) View() string {
 	if m.err != nil {
-		return errorStyle.Render(fmt.Sprintf("Error: %v\n\nPress Ctrl+C to quit", m.err))
+		return errorStyle.Render(fmt.Sprintf("Error: %v\n\nPress Ctrl+X to exit", m.err))
 	}
 
-	helpText := "↑/↓: Navigate • Enter: Select • Esc: Back • Ctrl+X: Quit"
+	helpText := "↑/↓: Navigate • Enter: Select • Esc: Back • Ctrl+X: Exit"
 	if m.state == selectingLLM {
-		helpText = "↑/↓: Navigate • Enter: Select • Ctrl+X: Quit"
+		helpText = "↑/↓: Navigate • Enter: Select • Ctrl+X: Exit"
 	}
 
 	var status string

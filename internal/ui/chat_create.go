@@ -109,7 +109,7 @@ func (m ChatCreateModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyMsg:
 		switch msg.String() {
-		case "ctrl+c", "ctrl+x":
+		case "ctrl+x":
 			return m, tea.Quit
 
 		case "esc":
@@ -268,7 +268,7 @@ func (m ChatCreateModel) View() string {
 	}
 	b.WriteString(createButton + "\n\n")
 
-	helpText := "Tab/Shift+Tab: Navigate • Enter: Next/Create • Space: Toggle • Esc: Cancel"
+	helpText := "Tab/Shift+Tab: Navigate • Enter: Next/Create • Space: Toggle • Esc: Back • Ctrl+X: Exit"
 	b.WriteString(helpStyle.Render(helpText))
 
 	return b.String()

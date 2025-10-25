@@ -618,6 +618,21 @@ func (p *Pipeline) LoadMultipleDocuments(ctx context.Context, chat *vector.Chat,
 			return
 		}
 
+		// Count total documents to embed
+		totalDocsToEmbed := 0
+		for _, pathResult := range paths {
+			loadResult, err := loader.LoadPath(ctx, pathResult.Path, chat.ID)
+			if err == nil {
+				totalDocsToEmbed += loadResult.SuccessCount
+			}
+		}
+
+		// Send initial progress
+		responseChan <- fmt.Sprintf("@@PROGRESS:0/%d@@", totalDocsToEmbed)
+
+		// Reload loader for actual processing
+		loader = document.NewLoader()
+
 		// Load each path
 		for i, pathResult := range paths {
 			logging.Info("Processing path %d/%d: %s", i+1, len(paths), pathResult.Path)
@@ -691,10 +706,13 @@ func (p *Pipeline) LoadMultipleDocuments(ctx context.Context, chat *vector.Chat,
 				totalChunks += len(chunks)
 				totalSuccess++
 				allDocuments = append(allDocuments, doc)
+
+				// Send progress update
+				responseChan <- fmt.Sprintf("@@PROGRESS:%d/%d@@", totalSuccess, totalDocsToEmbed)
 			}
 		}
 
-		responseChan <- fmt.Sprintf("\n✓ Loaded %d documents (%d chunks total)\n", totalSuccess, totalChunks)
+		// Documents loaded successfully, no success message needed in chat
 
 		// If user provided a query, process it immediately
 		if query != "" {
