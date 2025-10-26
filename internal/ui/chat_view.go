@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/glamour"
 
 	"rag-terminal/internal/document"
 	"rag-terminal/internal/logging"
@@ -50,14 +51,19 @@ type ChatViewModel struct {
 	processingState ProcessingState
 	embeddedFiles   int
 	totalFiles      int
+	embeddedDocCount int // Number of embedded documents in current context
 	err             error
 	ctx             context.Context
 	cancelFunc      context.CancelFunc
 	streamChan      <-chan string
 	errChan         <-chan error
-	streamBuffer    strings.Builder
-	lastRender      time.Time
-	tokenCount      int
+	streamBuffer       *strings.Builder
+	lastRender         time.Time
+	tokenCount         int
+	thinkingStartTime  time.Time
+	lastResponseTokens int
+	lastResponseTPS    float64
+	mdRenderer         *glamour.TermRenderer
 }
 
 type ChatMessageReceived struct {
@@ -84,6 +90,71 @@ type FileEmbeddingProgress struct {
 type RenderTickMsg struct{}
 
 type StateTransitionMsg struct{}
+
+type FileOnlyEmbedding struct {
+	Count int
+}
+
+// createMarkdownRenderer creates a markdown renderer with fallback handling
+func createMarkdownRenderer(width int) *glamour.TermRenderer {
+	// Try auto style first
+	renderer, err := glamour.NewTermRenderer(
+		glamour.WithAutoStyle(),
+		glamour.WithWordWrap(width-10),
+	)
+	if err == nil {
+		return renderer
+	}
+
+	logging.Error("Failed to create markdown renderer with auto style: %v, trying fallback", err)
+
+	// Try basic style as fallback
+	renderer, err = glamour.NewTermRenderer(
+		glamour.WithWordWrap(width - 10),
+	)
+	if err == nil {
+		return renderer
+	}
+
+	logging.Error("Failed to create markdown renderer with basic style: %v, using no style", err)
+
+	// Last resort: try with no options (should never fail)
+	renderer, err = glamour.NewTermRenderer()
+	if err != nil {
+		logging.Error("Critical: Failed to create basic markdown renderer: %v", err)
+		return nil
+	}
+
+	return renderer
+}
+
+// safeRenderMarkdown safely renders markdown with panic recovery and fallback
+func (m *ChatViewModel) safeRenderMarkdown(content string) string {
+	defer func() {
+		if r := recover(); r != nil {
+			logging.Error("Panic in markdown rendering: %v", r)
+		}
+	}()
+
+	// Fallback to plain text if no renderer
+	if m.mdRenderer == nil {
+		logging.Error("Markdown renderer is nil, falling back to plain text")
+		return content
+	}
+
+	// Empty content returns as-is
+	if content == "" {
+		return content
+	}
+
+	rendered, err := m.mdRenderer.Render(content)
+	if err != nil {
+		logging.Error("Markdown rendering error: %v, falling back to plain text", err)
+		return content
+	}
+
+	return strings.TrimRight(rendered, "\n")
+}
 
 func NewChatViewModel(chat *vector.Chat, pipeline *rag.Pipeline, vectorStore vector.VectorStore, width, height int) ChatViewModel {
 	ta := textarea.New()
@@ -132,6 +203,11 @@ func NewChatViewModel(chat *vector.Chat, pipeline *rag.Pipeline, vectorStore vec
 	ctx, cancel := context.WithCancel(context.Background())
 
 	fs := NewFileSelectorOverlayModel()
+	// Initialize file selector with current dimensions
+	fs.UpdateSize(width, height)
+
+	// Initialize markdown renderer with dark theme
+	mdRenderer := createMarkdownRenderer(width)
 
 	return ChatViewModel{
 		chat:         chat,
@@ -146,6 +222,8 @@ func NewChatViewModel(chat *vector.Chat, pipeline *rag.Pipeline, vectorStore vec
 		ctx:          ctx,
 		cancelFunc:   cancel,
 		lastRender:   time.Now(),
+		mdRenderer:   mdRenderer,
+		streamBuffer: &strings.Builder{},
 	}
 }
 
@@ -195,6 +273,10 @@ func (m ChatViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.viewport.Height = viewportHeight
 		m.textarea.SetWidth(msg.Width - 4)
 		m.fileSelector.UpdateSize(msg.Width, msg.Height)
+
+		// Update markdown renderer word wrap width
+		m.mdRenderer = createMarkdownRenderer(msg.Width)
+
 		return m, nil
 
 	case tea.KeyMsg:
@@ -229,7 +311,18 @@ func (m ChatViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.textarea.Reset()
 				m.processingState = StateEmbedding
 
-				m.addUserMessage(userMessage)
+				// Check if this is a file-only embedding (no query text)
+				multiPathResult := document.DetectAllPaths(userMessage)
+				isFileOnly := multiPathResult.HasPaths && strings.TrimSpace(multiPathResult.Query) == ""
+
+				// Only add user message if there's actual query text
+				if !isFileOnly {
+					m.addUserMessage(userMessage)
+					// Reset stats when sending new message with query
+					m.embeddedDocCount = 0
+					m.lastResponseTokens = 0
+					m.lastResponseTPS = 0
+				}
 
 				return m, tea.Batch(
 					m.sendMessage(userMessage),
@@ -290,25 +383,44 @@ func (m ChatViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Transition to thinking state when we start receiving tokens
 		if m.processingState != StateThinking {
 			m.processingState = StateThinking
+			m.thinkingStartTime = time.Now()
 		}
 
-		m.streamBuffer.WriteString(msg.Token)
+		// Filter out invalid UTF-8 replacement characters (�)
+		cleanToken := strings.ReplaceAll(msg.Token, "\uFFFD", "")
+
+		// Collect tokens in buffer - we'll render the complete message when done
+		if cleanToken != "" {
+			m.streamBuffer.WriteString(cleanToken)
+		}
 		m.tokenCount++
-
-		if time.Since(m.lastRender) >= renderInterval {
-			m.flushStreamBuffer()
-			m.lastRender = time.Now()
-		}
 
 		return m, waitForStreamToken(msg.StreamChan, msg.ErrChan)
 
 	case ChatResponseComplete:
 		m.flushStreamBuffer()
 		m.processingState = StateIdle
+
+		// Calculate tokens per second
+		if m.tokenCount > 0 && !m.thinkingStartTime.IsZero() {
+			duration := time.Since(m.thinkingStartTime).Seconds()
+			if duration > 0 {
+				m.lastResponseTokens = m.tokenCount
+				m.lastResponseTPS = float64(m.tokenCount) / duration
+			}
+		}
+
+		// Store the embedded document count before resetting
+		// Only update if files were actually embedded (totalFiles > 0)
+		if m.totalFiles > 0 {
+			m.embeddedDocCount = m.totalFiles
+		}
+
 		m.streamBuffer.Reset()
 		m.tokenCount = 0
 		m.embeddedFiles = 0
 		m.totalFiles = 0
+		m.thinkingStartTime = time.Time{}
 		return m, nil
 
 	case ChatResponseError:
@@ -318,6 +430,10 @@ func (m ChatViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.tokenCount = 0
 		m.embeddedFiles = 0
 		m.totalFiles = 0
+		m.embeddedDocCount = 0
+		m.thinkingStartTime = time.Time{}
+		m.lastResponseTokens = 0
+		m.lastResponseTPS = 0
 		return m, nil
 
 	case spinner.TickMsg:
@@ -349,12 +465,24 @@ func (m ChatViewModel) View() string {
 	title := TitleWithPaddingStyle.Render(m.chat.Name)
 	b.WriteString(title + "\n")
 
-	status := fmt.Sprintf("Model: %s | LLM reranking: %s | Temp: %.1f | TopK: %d",
-		m.chat.LLMModel,
-		map[bool]string{true: "ON", false: "OFF"}[m.chat.UseReranking],
-		m.chat.Temperature,
-		m.chat.TopK,
-	)
+	// Build status bar - show Files count in yellow if documents are embedded
+	var status string
+	if m.embeddedDocCount > 0 {
+		baseStatus := fmt.Sprintf("Model: %s | LLM reranking: %s | Temp: %.1f | ",
+			m.chat.LLMModel,
+			map[bool]string{true: "ON", false: "OFF"}[m.chat.UseReranking],
+			m.chat.Temperature,
+		)
+		filesInfo := FilesCountStyle.Render(fmt.Sprintf("Files: %d", m.embeddedDocCount))
+		status = baseStatus + filesInfo
+	} else {
+		status = fmt.Sprintf("Model: %s | LLM reranking: %s | Temp: %.1f | TopK: %d",
+			m.chat.LLMModel,
+			map[bool]string{true: "ON", false: "OFF"}[m.chat.UseReranking],
+			m.chat.Temperature,
+			m.chat.TopK,
+		)
+	}
 
 	switch m.processingState {
 	case StateEmbedding:
@@ -366,7 +494,12 @@ func (m ChatViewModel) View() string {
 	case StateReranking:
 		status += " | " + m.spinner.View() + " Reranking..."
 	case StateThinking:
-		status += " | " + m.spinner.View() + " Thinking..."
+		status += fmt.Sprintf(" | %s Thinking... (%d tokens)", m.spinner.View(), m.tokenCount)
+	case StateIdle:
+		// Show last response statistics if available
+		if m.lastResponseTokens > 0 {
+			status += fmt.Sprintf(" | Last response: %d tokens, %.1f tok/s", m.lastResponseTokens, m.lastResponseTPS)
+		}
 	}
 
 	b.WriteString(statusBarStyle.Render(status) + "\n\n")
@@ -402,16 +535,7 @@ func (m *ChatViewModel) addUserMessage(content string) {
 	}
 	m.messages = append(m.messages, msg)
 
-	// Add placeholder for assistant response
-	assistantMsg := vector.Message{
-		ID:        fmt.Sprintf("msg-%d", time.Now().UnixNano()+1),
-		ChatID:    m.chat.ID,
-		Role:      "assistant",
-		Content:   "",
-		Timestamp: time.Now(),
-	}
-	m.messages = append(m.messages, assistantMsg)
-
+	// Don't add assistant placeholder - we'll add it when response is complete
 	m.renderMessages()
 	m.viewport.GotoBottom()
 }
@@ -500,16 +624,20 @@ func (m *ChatViewModel) renderMessages() {
 
 	for _, msg := range m.messages {
 		if msg.Role == "user" {
-			timestamp := msg.Timestamp.Format("15:04:05")
 			label := UserMessageLabelStyle.Render("You:")
 
-			b.WriteString(GetUserMessageContentStyle(m.width).Render(label + "\n" + msg.Content))
-			b.WriteString(GetTimestampStyle(m.width).Render(timestamp))
+			// Use safe markdown rendering for user messages
+			renderedContent := m.safeRenderMarkdown(msg.Content)
+
+			b.WriteString(GetUserMessageContentStyle(m.width).Render(label + "\n" + renderedContent))
 			b.WriteString("\n\n")
 		} else {
 			label := AssistantMessageLabelStyle.Render("Assistant:")
 
-			b.WriteString(GetAssistantMessageContentStyle(m.width).Render(label + "\n" + msg.Content))
+			// Use safe markdown rendering for assistant messages
+			renderedContent := m.safeRenderMarkdown(msg.Content)
+
+			b.WriteString(GetAssistantMessageContentStyle(m.width).Render(label + "\n" + renderedContent))
 			b.WriteString("\n\n")
 		}
 	}
@@ -522,19 +650,19 @@ func (m *ChatViewModel) flushStreamBuffer() {
 		return
 	}
 
-	if len(m.messages) > 0 {
-		lastMsg := &m.messages[len(m.messages)-1]
-		if lastMsg.Role == "assistant" {
-			lastMsg.Content += m.streamBuffer.String()
-		}
+	// Add the complete assistant message
+	assistantMsg := vector.Message{
+		ID:        fmt.Sprintf("msg-%d", time.Now().UnixNano()),
+		ChatID:    m.chat.ID,
+		Role:      "assistant",
+		Content:   m.streamBuffer.String(),
+		Timestamp: time.Now(),
 	}
+	m.messages = append(m.messages, assistantMsg)
 
 	m.streamBuffer.Reset()
 	m.renderMessages()
-
-	if m.tokenCount%gotoBottomEvery == 0 {
-		m.viewport.GotoBottom()
-	}
+	m.viewport.GotoBottom()
 }
 
 func (m ChatViewModel) renderScrollIndicator() string {

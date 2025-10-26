@@ -44,6 +44,9 @@ var (
 	FileSelectorDimmedItemStyle   lipgloss.Style
 	FileSelectorFilterLabelStyle  lipgloss.Style
 	FileSelectorFilterInputStyle  lipgloss.Style
+
+	// Status bar file count style
+	FilesCountStyle lipgloss.Style
 )
 
 func init() {
@@ -103,7 +106,7 @@ func init() {
 
 	// Message styles (for chat messages)
 	UserMessageLabelStyle = lipgloss.NewStyle().
-		Foreground(tint.White()).
+		Foreground(tint.BrightWhite()).
 		Bold(true)
 
 	AssistantMessageLabelStyle = lipgloss.NewStyle().
@@ -111,7 +114,7 @@ func init() {
 		Bold(true)
 
 	UserMessageContentStyle = lipgloss.NewStyle().
-		Foreground(tint.Fg()).
+		Foreground(tint.BrightWhite()).
 		Padding(0, 1).
 		MarginBottom(1)
 
@@ -131,9 +134,11 @@ func init() {
 	SpinnerStyle = lipgloss.NewStyle().
 		Foreground(tint.Purple())
 
-	// Border styles
+	// Border styles - only top and bottom to avoid emoji alignment issues
 	ViewportBorderStyle = lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
+		BorderTop(true).
+		BorderBottom(true).
+		BorderStyle(lipgloss.NormalBorder()).
 		BorderForeground(tint.White()).
 		Padding(0, 1)
 
@@ -182,6 +187,11 @@ func init() {
 
 	FileSelectorFilterInputStyle = lipgloss.NewStyle().
 		Foreground(tint.Fg())
+
+	// Files count style - yellow for visibility
+	FilesCountStyle = lipgloss.NewStyle().
+		Foreground(tint.Yellow()).
+		Bold(true)
 }
 
 // Helper functions for dynamic styles
@@ -302,22 +312,23 @@ func RenderViewportWithBorder(content string) string {
 
 // GetUserMessageContentStyle returns a style for user message content with given width
 func GetUserMessageContentStyle(width int) lipgloss.Style {
-	return UserMessageContentStyle.
-		Width(width - 10).
-		Align(lipgloss.Right)
+	// Don't set Width() as it doesn't handle wide characters (emojis) correctly
+	// Content width is managed by glamour word wrapping
+	return UserMessageContentStyle
 }
 
 // GetAssistantMessageContentStyle returns a style for assistant message content with given width
 func GetAssistantMessageContentStyle(width int) lipgloss.Style {
-	return AssistantMessageContentStyle.
-		Width(width - 10)
+	// Don't set Width() as it doesn't handle wide characters (emojis) correctly
+	// Content width is managed by glamour word wrapping
+	return AssistantMessageContentStyle
 }
 
 // GetTimestampStyle returns a style for timestamp with given width
 func GetTimestampStyle(width int) lipgloss.Style {
+	// Don't set Width() as it doesn't handle wide characters correctly
 	return TimestampStyle.
-		Align(lipgloss.Right).
-		Width(width - 10)
+		Align(lipgloss.Right)
 }
 
 // GetFileSelectorBorderStyle returns border style with dynamic width
