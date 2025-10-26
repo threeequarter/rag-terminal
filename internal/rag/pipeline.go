@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"rag-terminal/internal/config"
 	"rag-terminal/internal/document"
 	"rag-terminal/internal/logging"
 	"rag-terminal/internal/models"
@@ -19,6 +20,7 @@ import (
 type Pipeline struct {
 	nexaClient  *nexa.Client
 	vectorStore vector.VectorStore
+	config      *config.Config
 }
 
 type ChatParams struct {
@@ -29,9 +31,17 @@ type ChatParams struct {
 }
 
 func NewPipeline(nexaClient *nexa.Client, vectorStore vector.VectorStore) *Pipeline {
+	// Load config, fallback to default if loading fails
+	cfg, err := config.Load()
+	if err != nil {
+		logging.Info("Failed to load config, using defaults: %v", err)
+		cfg = config.DefaultConfig()
+	}
+
 	return &Pipeline{
 		nexaClient:  nexaClient,
 		vectorStore: vectorStore,
+		config:      cfg,
 	}
 }
 
@@ -307,53 +317,103 @@ func (p *Pipeline) buildPromptWithContextAndDocuments(systemPrompt string, conte
 	return builder.String()
 }
 
-func (p *Pipeline) buildPromptWithContextAndDocumentsAndFileList(systemPrompt string, contextMessages []vector.Message, contextChunks []vector.DocumentChunk, allDocs []vector.Document, userMessage string) string {
+func (p *Pipeline) buildPromptWithContextAndDocumentsAndFileList(chat *vector.Chat, contextMessages []vector.Message, contextChunks []vector.DocumentChunk, allDocs []vector.Document, userMessage string) string {
 	var builder strings.Builder
 
+	// Calculate token budgets
+	contextWindow := chat.ContextWindow
+	if contextWindow <= 0 {
+		contextWindow = 4096 // Fallback to default
+	}
+
+	maxTokens := chat.MaxTokens
+	if maxTokens <= 0 {
+		maxTokens = 2048 // Fallback to default
+	}
+
+	budget := CalculateTokenBudget(contextWindow, maxTokens, p.config)
+
 	// HIERARCHICAL CONTEXT STRUCTURE
-	// Layer 1: Document overview (minimal tokens, high-level awareness)
+	// Layer 1: Document overview (uses FileListBudget)
 	if len(allDocs) > 0 {
 		builder.WriteString("# Available Documents\n")
+		fileListChars := budget.FileListBudget * CharsPerToken
+
+		var fileListBuilder strings.Builder
 		for i, doc := range allDocs {
-			builder.WriteString(fmt.Sprintf("%d. %s (%d chunks)\n", i+1, doc.FileName, doc.ChunkCount))
+			line := fmt.Sprintf("%d. %s (%d chunks)\n", i+1, doc.FileName, doc.ChunkCount)
+			if fileListBuilder.Len()+len(line) > fileListChars {
+				break // Stop if we exceed budget
+			}
+			fileListBuilder.WriteString(line)
 		}
+		builder.WriteString(fileListBuilder.String())
 		builder.WriteString("\n")
 	}
 
-	// Layer 2: Relevant excerpts (optimized for information density)
+	// Layer 2: Relevant excerpts (uses ExcerptsBudget)
 	if len(contextChunks) > 0 {
 		builder.WriteString("# Relevant Information\n\n")
 
-		// Use extractor to get only the most relevant parts of each chunk
+		excerptCharsRemaining := budget.ExcerptsBudget * CharsPerToken
 		extractor := document.NewExtractor()
 
 		for _, chunk := range contextChunks {
-			// Extract relevant excerpt (max 500 chars per chunk instead of full 1000)
-			// This allows fitting 2x more chunks in same context window
-			excerpt := extractor.ExtractRelevantExcerpt(chunk.Content, userMessage, 500)
+			if excerptCharsRemaining <= 0 {
+				break // Budget exhausted
+			}
 
-			// Add source reference
+			// Calculate max excerpt size for this chunk
+			maxExcerptSize := 500
+			if excerptCharsRemaining < maxExcerptSize {
+				maxExcerptSize = excerptCharsRemaining
+			}
+
+			if maxExcerptSize < 50 {
+				break // Not enough space for meaningful excerpt
+			}
+
+			excerpt := extractor.ExtractRelevantExcerpt(chunk.Content, userMessage, maxExcerptSize)
 			fileName := filepath.Base(chunk.FilePath)
-			builder.WriteString(fmt.Sprintf("[%s]\n%s\n\n", fileName, excerpt))
+
+			chunkText := fmt.Sprintf("[%s]\n%s\n\n", fileName, excerpt)
+			builder.WriteString(chunkText)
+
+			excerptCharsRemaining -= len(chunkText)
 		}
 		builder.WriteString("---\n\n")
 	}
 
-	// Layer 3: Conversation history (brief summaries)
+	// Layer 3: Conversation history (uses HistoryBudget)
 	if len(contextMessages) > 0 {
 		builder.WriteString("# Previous Context\n")
+
+		historyCharsRemaining := budget.HistoryBudget * CharsPerToken
+
 		for _, msg := range contextMessages {
-			// Truncate long messages to save tokens
-			content := msg.Content
-			if len(content) > 200 {
-				content = content[:197] + "..."
+			if historyCharsRemaining <= 0 {
+				break // Budget exhausted
 			}
-			builder.WriteString(fmt.Sprintf("[%s]: %s\n", msg.Role, content))
+
+			content := msg.Content
+			maxContentSize := historyCharsRemaining - 20 // Reserve space for role label and formatting
+
+			if maxContentSize < 20 {
+				break // Not enough space
+			}
+
+			if len(content) > maxContentSize {
+				content = content[:maxContentSize-3] + "..."
+			}
+
+			msgText := fmt.Sprintf("[%s]: %s\n", msg.Role, content)
+			builder.WriteString(msgText)
+			historyCharsRemaining -= len(msgText)
 		}
 		builder.WriteString("\n")
 	}
 
-	// Current query (full detail)
+	// Current query (full detail - not budget-limited as it's essential)
 	builder.WriteString("# Current Query\n")
 	builder.WriteString(userMessage)
 
@@ -515,7 +575,7 @@ func (p *Pipeline) LoadDocuments(ctx context.Context, chat *vector.Chat, path st
 			logging.Debug("Total documents in chat: %d", len(allDocs))
 
 			// Build prompt with both message and document context
-			prompt := p.buildPromptWithContextAndDocumentsAndFileList(chat.SystemPrompt, contextMessages, contextChunks, allDocs, query)
+			prompt := p.buildPromptWithContextAndDocumentsAndFileList(chat, contextMessages, contextChunks, allDocs, query)
 
 			// Call LLM
 			req := nexa.ChatCompletionRequest{
@@ -758,7 +818,7 @@ func (p *Pipeline) LoadMultipleDocuments(ctx context.Context, chat *vector.Chat,
 
 			// Get full document list
 			allDocs, _ := badgerStore.GetDocuments(ctx)
-			prompt := p.buildPromptWithContextAndDocumentsAndFileList(chat.SystemPrompt, msgs, chunks, allDocs, query)
+			prompt := p.buildPromptWithContextAndDocumentsAndFileList(chat, msgs, chunks, allDocs, query)
 
 			// Call LLM
 			req := nexa.ChatCompletionRequest{
@@ -863,20 +923,20 @@ func (p *Pipeline) ProcessUserMessageWithDocuments(
 		contextMessages = msgs
 		contextChunks = chunks
 
-		// Check if user mentioned a specific filename - if so, prioritize chunks from that file
+		// Check if user mentioned specific filenames - if so, prioritize chunks from those files
 		allDocs, _ := badgerStore.GetDocuments(ctx)
-		mentionedFile := findMentionedFile(userMessage, allDocs)
-		if mentionedFile != "" {
-			logging.Info("User mentioned specific file: %s - filtering chunks", mentionedFile)
-			// Filter to only chunks from that file, or if none found, get all chunks from that file
-			filteredChunks := filterChunksByFile(chunks, mentionedFile)
+		mentionedFiles := findMentionedFiles(userMessage, allDocs)
+		if len(mentionedFiles) > 0 {
+			logging.Info("User mentioned specific files: %v - filtering chunks", mentionedFiles)
+			// Filter to only chunks from those files, or if none found, get all chunks from those files
+			filteredChunks := filterChunksByFiles(chunks, mentionedFiles)
 			if len(filteredChunks) == 0 {
-				// No chunks matched via similarity, fetch all chunks from the mentioned file
-				logging.Info("No similar chunks from %s, fetching all chunks from file", mentionedFile)
-				filteredChunks = getAllChunksFromFile(badgerStore, ctx, mentionedFile)
+				// No chunks matched via similarity, fetch all chunks from the mentioned files
+				logging.Info("No similar chunks from %v, fetching all chunks from files", mentionedFiles)
+				filteredChunks = getAllChunksFromFiles(badgerStore, ctx, mentionedFiles)
 			}
 			contextChunks = filteredChunks
-			logging.Debug("After filename filtering: %d chunks from %s", len(contextChunks), mentionedFile)
+			logging.Debug("After filename filtering: %d chunks from %d files", len(contextChunks), len(mentionedFiles))
 		}
 	} else {
 		// Fallback to message-only search
@@ -916,7 +976,7 @@ func (p *Pipeline) ProcessUserMessageWithDocuments(
 		if badgerStore, ok := p.vectorStore.(*vector.BadgerStore); ok {
 			allDocs, _ = badgerStore.GetDocuments(ctx) // Ignore error, continue with empty list
 		}
-		prompt = p.buildPromptWithContextAndDocumentsAndFileList(chat.SystemPrompt, contextMessages, contextChunks, allDocs, userMessage)
+		prompt = p.buildPromptWithContextAndDocumentsAndFileList(chat, contextMessages, contextChunks, allDocs, userMessage)
 	} else {
 		prompt = p.buildPromptWithContext(chat.SystemPrompt, contextMessages, userMessage)
 	}
@@ -996,70 +1056,81 @@ func (p *Pipeline) ProcessUserMessageWithDocuments(
 	return responseChan, finalErrChan, nil
 }
 
-// findMentionedFile checks if the user message mentions any of the loaded document filenames
-func findMentionedFile(userMessage string, docs []vector.Document) string {
+// findMentionedFiles checks if the user message mentions any of the loaded document filenames
+// Returns all mentioned files, not just the first one
+func findMentionedFiles(userMessage string, docs []vector.Document) []string {
 	lowerMessage := strings.ToLower(userMessage)
+	var mentionedFiles []string
+	seenPaths := make(map[string]bool) // Prevent duplicates
 
 	for _, doc := range docs {
 		// Check both full path and just filename
 		fileName := filepath.Base(doc.FilePath)
+		normalizedPath := filepath.Clean(doc.FilePath)
+
 		if strings.Contains(lowerMessage, strings.ToLower(fileName)) {
-			// Return normalized path for consistent comparison
-			return filepath.Clean(doc.FilePath)
-		}
-		if strings.Contains(lowerMessage, strings.ToLower(doc.FilePath)) {
-			// Return normalized path for consistent comparison
-			return filepath.Clean(doc.FilePath)
+			if !seenPaths[normalizedPath] {
+				mentionedFiles = append(mentionedFiles, normalizedPath)
+				seenPaths[normalizedPath] = true
+			}
+		} else if strings.Contains(lowerMessage, strings.ToLower(doc.FilePath)) {
+			if !seenPaths[normalizedPath] {
+				mentionedFiles = append(mentionedFiles, normalizedPath)
+				seenPaths[normalizedPath] = true
+			}
 		}
 	}
 
-	return ""
+	return mentionedFiles
 }
 
-// filterChunksByFile returns only chunks from a specific file path
-func filterChunksByFile(chunks []vector.DocumentChunk, filePath string) []vector.DocumentChunk {
+// filterChunksByFiles returns only chunks from the specified file paths
+func filterChunksByFiles(chunks []vector.DocumentChunk, filePaths []string) []vector.DocumentChunk {
 	var filtered []vector.DocumentChunk
-	// Normalize the search path for comparison
-	normalizedSearchPath := strings.ToLower(filepath.Clean(filePath))
+
+	// Normalize all search paths for comparison
+	normalizedSearchPaths := make(map[string]bool)
+	for _, filePath := range filePaths {
+		normalizedSearchPaths[strings.ToLower(filepath.Clean(filePath))] = true
+	}
 
 	for _, chunk := range chunks {
 		// Normalize stored path for comparison (case-insensitive on Windows)
 		normalizedChunkPath := strings.ToLower(filepath.Clean(chunk.FilePath))
-		if normalizedChunkPath == normalizedSearchPath {
+		if normalizedSearchPaths[normalizedChunkPath] {
 			filtered = append(filtered, chunk)
 		}
 	}
 	return filtered
 }
 
-// getAllChunksFromFile retrieves all chunks for a specific file
-func getAllChunksFromFile(store *vector.BadgerStore, ctx context.Context, filePath string) []vector.DocumentChunk {
-	// Get all documents to find matching document ID
+// getAllChunksFromFiles retrieves all chunks for multiple specified files
+func getAllChunksFromFiles(store *vector.BadgerStore, ctx context.Context, filePaths []string) []vector.DocumentChunk {
+	// Get all documents to find matching document IDs
 	docs, err := store.GetDocuments(ctx)
 	if err != nil {
 		logging.Error("Failed to get documents: %v", err)
 		return []vector.DocumentChunk{}
 	}
 
-	// Normalize the search path for case-insensitive comparison on Windows
-	normalizedSearchPath := strings.ToLower(filepath.Clean(filePath))
-	logging.Debug("Searching for document with normalized path: %s", normalizedSearchPath)
+	// Build map of normalized paths to document IDs
+	normalizedSearchPaths := make(map[string]bool)
+	for _, filePath := range filePaths {
+		normalizedSearchPaths[strings.ToLower(filepath.Clean(filePath))] = true
+	}
+	logging.Debug("Searching for documents with normalized paths: %v", filePaths)
 
-	var targetDocID string
-	var matchedPath string
+	var targetDocIDs []string
 	for _, doc := range docs {
 		normalizedDocPath := strings.ToLower(filepath.Clean(doc.FilePath))
-		logging.Debug("Comparing against document: %s (normalized: %s)", doc.FilePath, normalizedDocPath)
-		if normalizedDocPath == normalizedSearchPath {
-			targetDocID = doc.ID
-			matchedPath = doc.FilePath
-			logging.Debug("Found matching document ID: %s", targetDocID)
-			break
+		if normalizedSearchPaths[normalizedDocPath] {
+			targetDocIDs = append(targetDocIDs, doc.ID)
+			logging.Debug("Found matching document ID: %s for path %s", doc.ID, doc.FilePath)
 		}
 	}
 
-	if targetDocID == "" {
-		logging.Error("Document not found for path: %s (normalized: %s)", filePath, normalizedSearchPath)
+	if len(targetDocIDs) == 0 {
+		logging.Error("No documents found for paths: %v", filePaths)
 		logging.Error("Available documents: %d", len(docs))
 		for i, doc := range docs {
 			logging.Error("  [%d] %s", i, doc.FilePath)
@@ -1067,11 +1138,17 @@ func getAllChunksFromFile(store *vector.BadgerStore, ctx context.Context, filePa
 		return []vector.DocumentChunk{}
 	}
 
-	logging.Info("Found document ID %s for path %s", targetDocID, matchedPath)
+	logging.Info("Found %d document IDs for %d requested paths", len(targetDocIDs), len(filePaths))
 
-	// Search with a dummy embedding to get all chunks, then filter by document ID
+	// Create a map for fast lookup
+	targetDocIDMap := make(map[string]bool)
+	for _, id := range targetDocIDs {
+		targetDocIDMap[id] = true
+	}
+
+	// Search with a dummy embedding to get all chunks, then filter by document IDs
 	dummyEmbedding := make([]float32, 768)
-	_, allChunks, err := store.SearchSimilarWithChunks(ctx, dummyEmbedding, 100)
+	_, allChunks, err := store.SearchSimilarWithChunks(ctx, dummyEmbedding, 200)
 	if err != nil {
 		logging.Error("Failed to search chunks: %v", err)
 		return []vector.DocumentChunk{}
@@ -1079,16 +1156,19 @@ func getAllChunksFromFile(store *vector.BadgerStore, ctx context.Context, filePa
 
 	var filtered []vector.DocumentChunk
 	for _, chunk := range allChunks {
-		if chunk.DocumentID == targetDocID {
+		if targetDocIDMap[chunk.DocumentID] {
 			filtered = append(filtered, chunk)
 		}
 	}
 
-	// Sort by chunk index to maintain order
+	// Sort by document ID first, then by chunk index to maintain order
 	sort.Slice(filtered, func(i, j int) bool {
+		if filtered[i].DocumentID != filtered[j].DocumentID {
+			return filtered[i].DocumentID < filtered[j].DocumentID
+		}
 		return filtered[i].ChunkIndex < filtered[j].ChunkIndex
 	})
 
-	logging.Debug("Retrieved %d chunks for document %s", len(filtered), filePath)
+	logging.Debug("Retrieved %d chunks for %d documents", len(filtered), len(targetDocIDs))
 	return filtered
 }

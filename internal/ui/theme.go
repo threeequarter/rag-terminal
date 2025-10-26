@@ -47,7 +47,7 @@ var (
 )
 
 func init() {
-	// Initialize with 3024 Night theme
+	// Initialize with Tint theme
 	tint.NewDefaultRegistry()
 	tint.SetTint(tint.TintChalk)
 	Theme = tint.DefaultRegistry

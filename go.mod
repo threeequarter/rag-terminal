@@ -11,6 +11,7 @@ require (
 	github.com/lrstanley/bubbletint v1.0.0
 	github.com/rmhubbert/bubbletea-overlay v0.4.4
 	golang.org/x/text v0.27.0
+	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (

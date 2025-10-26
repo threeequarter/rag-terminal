@@ -1,0 +1,174 @@
+package config
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+
+	"gopkg.in/yaml.v3"
+)
+
+const (
+	DefaultConfigDir  = ".rag-terminal"
+	DefaultConfigFile = "config.yaml"
+)
+
+// Config represents the application configuration
+type Config struct {
+	TokenBudget TokenBudgetConfig `yaml:"token_budget"`
+}
+
+// TokenBudgetConfig defines how available input tokens are allocated
+type TokenBudgetConfig struct {
+	// InputRatio: percentage of context window allocated for input tokens (0.0-1.0)
+	// The remainder is implicitly reserved for output
+	// Default: 0.5 (50% for input, 50% for output)
+	InputRatio float64 `yaml:"input_ratio"`
+
+	// Excerpts: percentage of available input tokens for document excerpts (0.0-1.0)
+	Excerpts float64 `yaml:"excerpts"`
+
+	// History: percentage of available input tokens for conversation history (0.0-1.0)
+	History float64 `yaml:"history"`
+
+	// Chunks: percentage allocated for full document chunks (calculated as remainder)
+	// This field is not in config file, it's calculated as: 1.0 - Excerpts - History
+}
+
+// DefaultConfig returns the default configuration
+func DefaultConfig() *Config {
+	return &Config{
+		TokenBudget: TokenBudgetConfig{
+			InputRatio: 0.5, // 50% of context window for input
+			Excerpts:   0.3, // 30% of input for excerpts
+			History:    0.1, // 10% of input for history
+			// Chunks is implicitly 0.6 (60% of input)
+		},
+	}
+}
+
+// GetConfigPath returns the path to the config file
+func GetConfigPath() (string, error) {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("failed to get home directory: %w", err)
+	}
+
+	configDir := filepath.Join(homeDir, DefaultConfigDir)
+	return filepath.Join(configDir, DefaultConfigFile), nil
+}
+
+// EnsureConfigDir creates the config directory if it doesn't exist
+func EnsureConfigDir() error {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("failed to get home directory: %w", err)
+	}
+
+	configDir := filepath.Join(homeDir, DefaultConfigDir)
+	if err := os.MkdirAll(configDir, 0755); err != nil {
+		return fmt.Errorf("failed to create config directory: %w", err)
+	}
+
+	return nil
+}
+
+// Load loads the configuration from file, creating default if not exists
+func Load() (*Config, error) {
+	configPath, err := GetConfigPath()
+	if err != nil {
+		return nil, err
+	}
+
+	// Check if config file exists
+	if _, err := os.Stat(configPath); os.IsNotExist(err) {
+		// Config file doesn't exist, create default
+		cfg := DefaultConfig()
+		if err := Save(cfg); err != nil {
+			// If save fails, just return default config without error
+			// This ensures the app works even if we can't write config
+			return cfg, nil
+		}
+		return cfg, nil
+	}
+
+	// Read config file
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read config file: %w", err)
+	}
+
+	// Parse YAML
+	var cfg Config
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return nil, fmt.Errorf("failed to parse config file: %w", err)
+	}
+
+	// Validate config
+	if err := cfg.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid config: %w", err)
+	}
+
+	return &cfg, nil
+}
+
+// Save saves the configuration to file
+func Save(cfg *Config) error {
+	if err := cfg.Validate(); err != nil {
+		return fmt.Errorf("cannot save invalid config: %w", err)
+	}
+
+	// Ensure config directory exists
+	if err := EnsureConfigDir(); err != nil {
+		return err
+	}
+
+	configPath, err := GetConfigPath()
+	if err != nil {
+		return err
+	}
+
+	// Marshal to YAML
+	data, err := yaml.Marshal(cfg)
+	if err != nil {
+		return fmt.Errorf("failed to marshal config: %w", err)
+	}
+
+	// Write to file
+	if err := os.WriteFile(configPath, data, 0644); err != nil {
+		return fmt.Errorf("failed to write config file: %w", err)
+	}
+
+	return nil
+}
+
+// Validate validates the configuration values
+func (c *Config) Validate() error {
+	// Validate InputRatio
+	if c.TokenBudget.InputRatio < 0.0 || c.TokenBudget.InputRatio > 1.0 {
+		return fmt.Errorf("token_budget.input_ratio must be between 0.0 and 1.0, got %f", c.TokenBudget.InputRatio)
+	}
+
+	// Validate Excerpts
+	if c.TokenBudget.Excerpts < 0.0 || c.TokenBudget.Excerpts > 1.0 {
+		return fmt.Errorf("token_budget.excerpts must be between 0.0 and 1.0, got %f", c.TokenBudget.Excerpts)
+	}
+
+	// Validate History
+	if c.TokenBudget.History < 0.0 || c.TokenBudget.History > 1.0 {
+		return fmt.Errorf("token_budget.history must be between 0.0 and 1.0, got %f", c.TokenBudget.History)
+	}
+
+	// Validate sum doesn't exceed 1.0
+	sum := c.TokenBudget.Excerpts + c.TokenBudget.History
+	if sum > 1.0 {
+		return fmt.Errorf("token_budget.excerpts + token_budget.history must not exceed 1.0, got %f", sum)
+	}
+
+	return nil
+}
+
+// GetChunksBudget returns the calculated percentage for chunks
+func (c *Config) GetChunksBudget() float64 {
+	return 1.0 - c.TokenBudget.Excerpts - c.TokenBudget.History
+}

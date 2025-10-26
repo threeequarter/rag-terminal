@@ -20,6 +20,7 @@ const (
 	fieldSystemPrompt
 	fieldTemperature
 	fieldTopK
+	fieldContextWindow
 	fieldReranking
 	fieldCreateButton
 )
@@ -29,6 +30,7 @@ type ChatCreateModel struct {
 	systemPromptArea    textarea.Model
 	temperatureInput    textinput.Model
 	topKInput           textinput.Model
+	contextWindowInput  textinput.Model
 	rerankingEnabled    bool
 	currentField        chatCreateField
 	llmModel            string
@@ -38,6 +40,7 @@ type ChatCreateModel struct {
 	err                 error
 	temperatureError    string
 	topKError           string
+	contextWindowError  string
 	validationAttempted bool
 }
 
@@ -70,20 +73,27 @@ func NewChatCreateModel(llmModel, embedModel string, width, height int) ChatCrea
 	topKInput.CharLimit = 3
 	topKInput.Width = 10
 
+	contextWindowInput := textinput.New()
+	contextWindowInput.Placeholder = "4096"
+	contextWindowInput.SetValue("4096")
+	contextWindowInput.CharLimit = 6
+	contextWindowInput.Width = 10
+
 	// Enable LLM reranking by default
 	rerankingEnabled := true
 
 	return ChatCreateModel{
-		nameInput:        nameInput,
-		systemPromptArea: systemPromptArea,
-		temperatureInput: tempInput,
-		topKInput:        topKInput,
-		rerankingEnabled: rerankingEnabled,
-		currentField:     fieldName,
-		llmModel:         llmModel,
-		embedModel:       embedModel,
-		width:            width,
-		height:           height,
+		nameInput:          nameInput,
+		systemPromptArea:   systemPromptArea,
+		temperatureInput:   tempInput,
+		topKInput:          topKInput,
+		contextWindowInput: contextWindowInput,
+		rerankingEnabled:   rerankingEnabled,
+		currentField:       fieldName,
+		llmModel:           llmModel,
+		embedModel:         embedModel,
+		width:              width,
+		height:             height,
 	}
 }
 
@@ -103,6 +113,7 @@ func (m ChatCreateModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case ValidationFailed:
 		m.temperatureError = msg.TemperatureError
 		m.topKError = msg.TopKError
+		m.contextWindowError = msg.ContextWindowError
 		m.validationAttempted = true
 		return m, nil
 
@@ -175,6 +186,14 @@ func (m ChatCreateModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.validationAttempted {
 			m.topKError = ""
 		}
+	case fieldContextWindow:
+		var cmd tea.Cmd
+		m.contextWindowInput, cmd = m.contextWindowInput.Update(msg)
+		cmds = append(cmds, cmd)
+		// Clear context window error when user types
+		if m.validationAttempted {
+			m.contextWindowError = ""
+		}
 	}
 
 	return m, tea.Batch(cmds...)
@@ -211,6 +230,14 @@ func (m ChatCreateModel) View() string {
 	b.WriteString(m.topKInput.View() + "\n")
 	if m.topKError != "" {
 		b.WriteString(RenderError(m.topKError) + "\n")
+	}
+	b.WriteString("\n")
+
+	// Context Window field
+	b.WriteString(RenderFieldLabel("Context Window (1024-32768):", m.currentField == fieldContextWindow) + "\n")
+	b.WriteString(m.contextWindowInput.View() + "\n")
+	if m.contextWindowError != "" {
+		b.WriteString(RenderError(m.contextWindowError) + "\n")
 	}
 	b.WriteString("\n")
 
@@ -257,6 +284,7 @@ func (m *ChatCreateModel) updateFocus() {
 	m.systemPromptArea.Blur()
 	m.temperatureInput.Blur()
 	m.topKInput.Blur()
+	m.contextWindowInput.Blur()
 
 	switch m.currentField {
 	case fieldName:
@@ -267,20 +295,24 @@ func (m *ChatCreateModel) updateFocus() {
 		m.temperatureInput.Focus()
 	case fieldTopK:
 		m.topKInput.Focus()
+	case fieldContextWindow:
+		m.contextWindowInput.Focus()
 	}
 }
 
 type ValidationFailed struct {
-	TemperatureError string
-	TopKError        string
+	TemperatureError    string
+	TopKError           string
+	ContextWindowError  string
 }
 
 func (m ChatCreateModel) createChat() tea.Cmd {
 	return func() tea.Msg {
 		// Validate temperature
-		var temperatureError, topKError string
+		var temperatureError, topKError, contextWindowError string
 		var temperature float64
 		var topK int
+		var contextWindow int
 
 		tempValue := m.temperatureInput.Value()
 		if tempValue == "" {
@@ -311,11 +343,27 @@ func (m ChatCreateModel) createChat() tea.Cmd {
 			}
 		}
 
+		// Validate Context Window
+		contextWindowValue := m.contextWindowInput.Value()
+		if contextWindowValue == "" {
+			contextWindowError = "Context Window is required"
+		} else {
+			cw, err := strconv.Atoi(contextWindowValue)
+			if err != nil {
+				contextWindowError = "Context Window must be an integer"
+			} else if cw < 1024 || cw > 32768 {
+				contextWindowError = "Context Window must be between 1024 and 32768"
+			} else {
+				contextWindow = cw
+			}
+		}
+
 		// If validation failed, return validation errors
-		if temperatureError != "" || topKError != "" {
+		if temperatureError != "" || topKError != "" || contextWindowError != "" {
 			return ValidationFailed{
-				TemperatureError: temperatureError,
-				TopKError:        topKError,
+				TemperatureError:   temperatureError,
+				TopKError:          topKError,
+				ContextWindowError: contextWindowError,
 			}
 		}
 
@@ -331,16 +379,17 @@ func (m ChatCreateModel) createChat() tea.Cmd {
 		}
 
 		chat := &vector.Chat{
-			ID:           fmt.Sprintf("chat-%d", time.Now().Unix()),
-			Name:         name,
-			SystemPrompt: systemPrompt,
-			LLMModel:     m.llmModel,
-			EmbedModel:   m.embedModel,
-			CreatedAt:    time.Now(),
-			Temperature:  temperature,
-			TopK:         topK,
-			UseReranking: m.rerankingEnabled,
-			MaxTokens:    2048,
+			ID:            fmt.Sprintf("chat-%d", time.Now().Unix()),
+			Name:          name,
+			SystemPrompt:  systemPrompt,
+			LLMModel:      m.llmModel,
+			EmbedModel:    m.embedModel,
+			CreatedAt:     time.Now(),
+			Temperature:   temperature,
+			TopK:          topK,
+			UseReranking:  m.rerankingEnabled,
+			MaxTokens:     2048,
+			ContextWindow: contextWindow,
 		}
 
 		return ChatCreated{Chat: chat}

@@ -10,12 +10,18 @@ import (
 )
 
 type ChatCompletionRequest struct {
-	Model       string        `json:"model"`
-	Messages    []ChatMessage `json:"messages"`
-	Stream      bool          `json:"stream"`
-	Temperature float64       `json:"temperature,omitempty"`
-	MaxTokens   int           `json:"max_tokens,omitempty"`
-	TopP        float64       `json:"top_p,omitempty"`
+	Model              string        `json:"model"`
+	Messages           []ChatMessage `json:"messages"`
+	Stream             bool          `json:"stream"`
+	Temperature        float64       `json:"temperature,omitempty"`
+	MaxTokens          int           `json:"max_tokens,omitempty"`
+	TopP               float64       `json:"top_p,omitempty"`
+	TopK               int           `json:"top_k,omitempty"`
+	MinP               float64       `json:"min_p,omitempty"`
+	RepetitionPenalty  float64       `json:"repetition_penalty,omitempty"`
+	PresencePenalty    float64       `json:"presence_penalty,omitempty"`
+	FrequencyPenalty   float64       `json:"frequency_penalty,omitempty"`
+	Stop               interface{}   `json:"stop,omitempty"` // string or []string
 }
 
 type ChatMessage struct {

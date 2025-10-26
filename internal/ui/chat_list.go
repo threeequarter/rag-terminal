@@ -52,7 +52,7 @@ func NewChatListModel(chats []vector.Chat, width, height int) ChatListModel {
 	delegate := CreateThemedDelegate()
 	l := list.New(items, delegate, width, height-4)
 	l.Title = "Chat Conversations"
-	l.SetShowStatusBar(true)
+	l.SetShowStatusBar(false)
 	l.SetFilteringEnabled(true)
 	l.SetShowHelp(false)
 	ConfigureListStyles(&l)
