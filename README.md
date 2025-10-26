@@ -12,17 +12,13 @@ A Go-based RAG (Retrieval-Augmented Generation) chat application with a Bubblete
 - **Content Optimization**: Smart excerpt extraction and text normalization for efficient token usage
 - **Code-Aware Chunking**: Preserves code structure by chunking at function/class boundaries instead of arbitrary sizes
 - **Multilingual Support**: Automatic language detection and stop word filtering for English, German, French, Spanish, and Russian
-- **Deduplication**: SHA-256 hashing prevents duplicate document storage
-- **Cross-Platform Path Detection**: Automatically detects file paths on Windows, Linux, and macOS
 - **Multi-File Support**: Load and compare multiple files in a single message
 - **LLM-based Reranking**: Scores and reranks retrieved context for relevance
 - **File-Specific Queries**: Prioritizes content from mentioned files
-- **Database-per-Chat**: Isolated vector storage for each chat conversation
 - **Streaming Responses**: Real-time streaming of AI responses
 - **Model Selection**: Choose from available LLM and embedding models
 - **Chat Management**: Create, list, and delete chat conversations
 - **Persistent Storage**: All chats and messages stored locally in BadgerDB
-- **Debug Logging**: Automatic logging to file for troubleshooting
 
 ## Architecture
 

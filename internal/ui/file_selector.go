@@ -55,6 +55,15 @@ func (m *FileSelectorModel) SetFiles(files []vector.Document) {
 	m.filterInput.Focus()
 	m.updateFilteredFiles()
 	m.selectedIndex = 0
+
+	// Update filter input width based on current overlay width
+	if m.width > 0 {
+		overlayWidth := m.width / 2
+		if overlayWidth < 40 {
+			overlayWidth = 40
+		}
+		m.filterInput.Width = overlayWidth - 12
+	}
 }
 
 func (m *FileSelectorModel) updateFilteredFiles() {
