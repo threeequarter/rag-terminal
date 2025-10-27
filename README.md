@@ -1,5 +1,9 @@
 # RAG Terminal
 
+[![Build and Release](https://github.com/YOUR_USERNAME/rag-terminal/actions/workflows/release.yml/badge.svg)](https://github.com/YOUR_USERNAME/rag-terminal/actions/workflows/release.yml)
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Go Version](https://img.shields.io/badge/go-1.21+-00ADD8.svg)](https://golang.org)
+
 A Go-based RAG (Retrieval-Augmented Generation) chat application with a Bubbletea TUI interface, utilizing local Nexa SDK models and BadgerDB for vector storage.
 
 ![demo.gif](media%2Fdemo.gif)
@@ -64,11 +68,48 @@ A Go-based RAG (Retrieval-Augmented Generation) chat application with a Bubblete
   - Chat creation with RAG parameters
   - Chat conversation view with document loading support
 
-- **Logging** (`internal/logging/`): Debug logging system
-  - File-based logging next to executable
-  - Timestamped log files (rag-debug-YYYY-MM-DD.log)
-  - Debug, Info, and Error level logging
+- **Logging** (`internal/logging/`): Optional debug logging system
+  - Conditional logging controlled by RT_LOGS environment variable
+  - File-based logging in `~/.rag-terminal/logs/`
+  - Timestamped log files (rag-YYYY-MM-DD.log)
+  - Three log levels: debug, info, error
   - Detailed operation tracing for troubleshooting
+  - Disabled by default (no performance impact when not enabled)
+
+## Download
+
+Pre-built binaries are available for all major platforms. Download the latest release:
+
+**[📥 Latest Release](https://github.com/YOUR_USERNAME/rag-terminal/releases/latest)**
+
+### Available Platforms
+
+| Platform | Architecture | Download |
+|----------|-------------|----------|
+| Windows  | AMD64       | [rag-terminal-windows-amd64.zip](https://github.com/YOUR_USERNAME/rag-terminal/releases/latest/download/rag-terminal-windows-amd64.zip) |
+| Windows  | ARM64       | [rag-terminal-windows-arm64.zip](https://github.com/YOUR_USERNAME/rag-terminal/releases/latest/download/rag-terminal-windows-arm64.zip) |
+| Linux    | AMD64       | [rag-terminal-linux-amd64.tar.gz](https://github.com/YOUR_USERNAME/rag-terminal/releases/latest/download/rag-terminal-linux-amd64.tar.gz) |
+| Linux    | ARM64       | [rag-terminal-linux-arm64.tar.gz](https://github.com/YOUR_USERNAME/rag-terminal/releases/latest/download/rag-terminal-linux-arm64.tar.gz) |
+| macOS    | Intel       | [rag-terminal-darwin-amd64.tar.gz](https://github.com/YOUR_USERNAME/rag-terminal/releases/latest/download/rag-terminal-darwin-amd64.tar.gz) |
+| macOS    | Apple Silicon | [rag-terminal-darwin-arm64.tar.gz](https://github.com/YOUR_USERNAME/rag-terminal/releases/latest/download/rag-terminal-darwin-arm64.tar.gz) |
+
+### Installation from Binary
+
+**Windows:**
+```powershell
+# Download and extract
+Expand-Archive rag-terminal-windows-amd64.zip
+cd rag-terminal-windows-amd64
+.\rag-terminal.exe
+```
+
+**Linux/macOS:**
+```bash
+# Download and extract
+tar -xzf rag-terminal-linux-amd64.tar.gz
+chmod +x rag-terminal-linux-amd64
+./rag-terminal-linux-amd64
+```
 
 ## Prerequisites
 
@@ -96,9 +137,16 @@ A Go-based RAG (Retrieval-Augmented Generation) chat application with a Bubblete
 
 ## Installation
 
-1. Clone or navigate to the repository:
+### Option 1: Download Pre-built Binary (Recommended)
+
+See the [Download](#download) section above for pre-built binaries.
+
+### Option 2: Build from Source
+
+1. Clone the repository:
    ```bash
-   cd .\rag-terminal
+   git clone https://github.com/YOUR_USERNAME/rag-terminal.git
+   cd rag-terminal
    ```
 
 2. Install dependencies:
@@ -108,7 +156,11 @@ A Go-based RAG (Retrieval-Augmented Generation) chat application with a Bubblete
 
 3. Build the application:
    ```bash
+   # Windows
    go build -o rag-terminal.exe .
+
+   # Linux/macOS
+   go build -o rag-terminal .
    ```
 
 ## Usage
@@ -185,6 +237,16 @@ A Go-based RAG (Retrieval-Augmented Generation) chat application with a Bubblete
 - **Chunk Size**: 1000 characters
 - **Chunk Overlap**: 50 characters (optimized for token efficiency)
 - **LLM Reranking**: Enabled by default
+- **Logging**: Disabled by default (no performance impact)
+
+### Environment Variables
+
+- **RT_LOGS**: Controls logging behavior (optional)
+  - `debug`: Enable verbose logging (all operations)
+  - `info`: Enable informational logging (major operations)
+  - `error`: Enable error-only logging
+  - Not set (default): Logging disabled
+  - Log files stored in: `~/.rag-terminal/logs/rag-YYYY-MM-DD.log`
 
 ### RAG Parameters
 
@@ -288,7 +350,7 @@ rag-terminal/
   - macOS: `/Users/name/file.txt` or `/Applications/App.app`
 - Check that the file/directory exists and is accessible
 - Verify the file format is supported
-- Review debug logs: `rag-debug-YYYY-MM-DD.log` next to the executable
+- Enable debug logging with `RT_LOGS=debug` and review logs in `~/.rag-terminal/logs/`
 
 ### Path detection not working
 - Windows paths: Must start with drive letter (e.g., `C:\`, `D:\`)
@@ -297,9 +359,37 @@ rag-terminal/
 - Try wrapping paths with spaces in quotes
 
 ### Debug logs
-- Log files are created next to the executable as `rag-debug-YYYY-MM-DD.log`
-- Logs include detailed tracing of document loading, embedding generation, and search operations
-- Use logs to troubleshoot issues with document processing and path detection
+
+Logging is **disabled by default** for performance. Enable it using the `RT_LOGS` environment variable:
+
+**Windows (PowerShell):**
+```powershell
+$env:RT_LOGS="debug"
+.\rag-terminal.exe
+```
+
+**Windows (CMD):**
+```cmd
+set RT_LOGS=debug
+rag-terminal.exe
+```
+
+**Linux/macOS:**
+```bash
+export RT_LOGS=debug
+./rag-terminal
+```
+
+**Log Levels:**
+- `debug`: Most verbose - logs all operations (embedding, search, document loading)
+- `info`: Moderate - logs major operations and flow
+- `error`: Minimal - logs only errors
+
+**Log Location:**
+- Logs are written to `~/.rag-terminal/logs/rag-YYYY-MM-DD.log`
+- One log file per day
+- Logs include timestamps with microsecond precision
+- Use logs to troubleshoot issues with document processing, path detection, and RAG operations
 
 ## Development
 
@@ -307,7 +397,7 @@ rag-terminal/
 
 ```bash
 # Navigate to repository
-cd .\rag-terminal
+cd rag-terminal
 
 # Install dependencies
 go mod download
@@ -316,7 +406,22 @@ go mod download
 go build -o rag-terminal.exe .
 
 # Run
-.\rag-terminal.exe
+./rag-terminal.exe
+```
+
+### Cross-Platform Build
+
+Build for all platforms:
+
+```bash
+# Windows AMD64
+GOOS=windows GOARCH=amd64 go build -o dist/rag-terminal-windows-amd64.exe .
+
+# Linux AMD64
+GOOS=linux GOARCH=amd64 go build -o dist/rag-terminal-linux-amd64 .
+
+# macOS ARM64 (Apple Silicon)
+GOOS=darwin GOARCH=arm64 go build -o dist/rag-terminal-darwin-arm64 .
 ```
 
 ### Testing
@@ -328,6 +433,18 @@ go test ./...
 # Run with race detector
 go test -race ./...
 ```
+
+### CI/CD
+
+The project uses GitHub Actions for automated builds and releases:
+
+- **Workflow**: `.github/workflows/release.yml`
+- **Trigger**: Every push to `main` branch
+- **Artifacts**: Binaries for Windows, Linux, and macOS (AMD64 and ARM64)
+- **Versioning**: Auto-generated from date and git commit hash (`vYYYY.MM.DD-githash`)
+- **Releases**: Automatically created with checksums and download links
+
+Each commit to `main` creates a new release with pre-built binaries for all supported platforms.
 
 ## API Endpoints Used
 

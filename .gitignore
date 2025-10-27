@@ -31,3 +31,6 @@ go.work.sum
 /.claude/
 /.idea/
 ./icon/
+
+# Build artifacts
+dist/

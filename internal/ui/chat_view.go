@@ -52,6 +52,7 @@ type ChatViewModel struct {
 	embeddedFiles   int
 	totalFiles      int
 	embeddedDocCount int // Number of embedded documents in current context
+	hasQuery        bool // Track if current operation has a query (needs LLM)
 	err             error
 	ctx             context.Context
 	cancelFunc      context.CancelFunc
@@ -314,6 +315,7 @@ func (m ChatViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// Check if this is a file-only embedding (no query text)
 				multiPathResult := document.DetectAllPaths(userMessage)
 				isFileOnly := multiPathResult.HasPaths && strings.TrimSpace(multiPathResult.Query) == ""
+				m.hasQuery = !isFileOnly // Track whether this operation has a query
 
 				// Only add user message if there's actual query text
 				if !isFileOnly {
@@ -324,10 +326,14 @@ func (m ChatViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.lastResponseTPS = 0
 				}
 
-				return m, tea.Batch(
-					m.sendMessage(userMessage),
-					m.scheduleStateTransition(),
-				)
+				// Only schedule state transition if there's a query (needs reranking/thinking)
+				var cmds []tea.Cmd
+				cmds = append(cmds, m.sendMessage(userMessage))
+				if m.hasQuery {
+					cmds = append(cmds, m.scheduleStateTransition())
+				}
+
+				return m, tea.Batch(cmds...)
 			}
 		}
 
@@ -352,7 +358,8 @@ func (m ChatViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case StateTransitionMsg:
 		// Auto-transition from Embedding to Reranking if appropriate
-		if m.processingState == StateEmbedding && m.chat.UseReranking {
+		// Only transition if: still embedding, reranking enabled, AND there's a query to process
+		if m.processingState == StateEmbedding && m.chat.UseReranking && m.hasQuery {
 			m.processingState = StateReranking
 		}
 		return m, nil
@@ -400,6 +407,7 @@ func (m ChatViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case ChatResponseComplete:
 		m.flushStreamBuffer()
 		m.processingState = StateIdle
+		m.hasQuery = false // Reset query flag for next operation
 
 		// Calculate tokens per second
 		if m.tokenCount > 0 && !m.thinkingStartTime.IsZero() {
@@ -426,6 +434,7 @@ func (m ChatViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case ChatResponseError:
 		m.err = msg.Err
 		m.processingState = StateIdle
+		m.hasQuery = false // Reset query flag for next operation
 		m.streamBuffer.Reset()
 		m.tokenCount = 0
 		m.embeddedFiles = 0
