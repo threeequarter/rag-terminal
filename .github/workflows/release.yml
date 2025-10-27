@@ -91,7 +91,7 @@ jobs:
       - name: Generate release tag
         id: tag
         run: |
-          echo "tag=release-${GITHUB_SHA::7}-$(date)" >> $GITHUB_OUTPUT
+          echo "tag=release-${GITHUB_SHA::7}-$(date +%Y-%m-%d)" >> $GITHUB_OUTPUT
 
       - name: Create Draft Release
         uses: ncipollo/release-action@v1
