@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   build:
-    name: Build ${{ matrix.goos }}-${{ matrix.goarch }}
+    name: Build ${{ matrix.platform }}-${{ matrix.goarch }}
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -19,25 +19,31 @@ jobs:
           - goos: linux
             goarch: amd64
             os: ubuntu-latest
+            platform: linux
           - goos: linux
             goarch: arm64
             os: ubuntu-latest
+            platform: linux
 
           # macOS builds
           - goos: darwin
             goarch: amd64
             os: macos-latest
+            platform: macos
           - goos: darwin
             goarch: arm64
             os: macos-latest
+            platform: macos
 
           # Windows builds
           - goos: windows
             goarch: amd64
             os: windows-latest
+            platform: windows
           - goos: windows
             goarch: arm64
             os: windows-latest
+            platform: windows
 
     steps:
       - name: Checkout code
@@ -54,13 +60,13 @@ jobs:
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: 0
         run: |
-          go build -v -o rag-terminal-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.goos == 'windows' && '.exe' || '' }} .
+          go build -v -o rag-terminal-${{ matrix.platform }}-${{ matrix.goarch }}${{ matrix.goos == 'windows' && '.exe' || '' }} .
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: rag-terminal-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: rag-terminal-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.goos == 'windows' && '.exe' || '' }}
+          name: rag-terminal-${{ matrix.platform }}-${{ matrix.goarch }}
+          path: rag-terminal-${{ matrix.platform }}-${{ matrix.goarch }}${{ matrix.goos == 'windows' && '.exe' || '' }}
           if-no-files-found: error
 
   release:
@@ -85,7 +91,7 @@ jobs:
       - name: Generate release tag
         id: tag
         run: |
-          echo "tag=release-$(date +'%Y%m%d-%H%M%S')-${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
+          echo "tag=release-${GITHUB_SHA::7}-$(date)" >> $GITHUB_OUTPUT
 
       - name: Create Draft Release
         uses: ncipollo/release-action@v1
