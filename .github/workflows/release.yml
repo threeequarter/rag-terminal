@@ -87,16 +87,26 @@ jobs:
         run: |
           echo "tag=release-$(date +'%Y%m%d-%H%M%S')-${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
 
-      - name: Create Release
+      - name: Create Draft Release
         uses: ncipollo/release-action@v1
         with:
           tag: ${{ steps.tag.outputs.tag }}
           name: ${{ steps.tag.outputs.tag }}
           artifacts: "artifacts/*"
           artifactErrorsFailBuild: true
-          draft: false
+          draft: true
           prerelease: false
           generateReleaseNotes: false
           body: 'Automated release from commit ${{ github.sha }}'
           allowUpdates: true
           removeArtifacts: true
+
+      - name: Publish Release
+        uses: ncipollo/release-action@v1
+        with:
+          tag: ${{ steps.tag.outputs.tag }}
+          allowUpdates: true
+          draft: false
+          updateOnlyUnreleased: true
+          omitBody: true
+          omitName: true
