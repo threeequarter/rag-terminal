@@ -138,7 +138,7 @@ Pre-built binaries are available for all major platforms. Download the latest re
   - Not set (default): Logging disabled
 
 ### Additional global parameters
-Can be set in ~./rag-terminal/config.yaml:
+Can be set in `~./rag-terminal/config.yaml`:
 - **input_ratio**: What part of total **context window** will be used to inject context to model (default 0.6, so model will receive no more than 0.6 * 4096 = 2457 tokens as context to answer)
 - **excerpts**: What part of **input_ratio** will be used to inject relevant document excerpts
 - **history**: What part of **input_ratio** will be used to inject relevant parts of conversation history
