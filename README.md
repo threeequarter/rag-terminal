@@ -1,7 +1,6 @@
 # RAG Terminal
 
-[![Build and Release](https://github.com/YOUR_USERNAME/rag-terminal/actions/workflows/release.yml/badge.svg)](https://github.com/YOUR_USERNAME/rag-terminal/actions/workflows/release.yml)
-[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![License](https://img.shields.io/badge/license-APACHE2-blue.svg)](LICENSE)
 [![Go Version](https://img.shields.io/badge/go-1.21+-00ADD8.svg)](https://golang.org)
 
 A Go-based RAG (Retrieval-Augmented Generation) chat application with a Bubbletea TUI interface, utilizing local Nexa SDK models and BadgerDB for vector storage.
