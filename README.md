@@ -72,8 +72,9 @@ Pre-built binaries are available for all major platforms. Download the latest re
 3. **Create or Open Chat**:
    - **Chat Name**: Name your conversation
    - **System Prompt**: Define AI behavior
-   - **Temperature**: Response randomness (0-1, default: 0.7)
+   - **Temperature**: Response randomness (0-2, default: 0.7)
    - **Top K**: Context messages to retrieve (default: 5)
+   - **Context Window**: Total context budget for single completion (query plus injected context plus model response)
    - **Use LLM Reranking**: Enabled by default - LLM scores retrieved messages for relevance
 
 4. **Load Documents** (Optional):
@@ -136,15 +137,8 @@ Pre-built binaries are available for all major platforms. Download the latest re
   - `error`: Enable error-only logging
   - Not set (default): Logging disabled
 
-### RAG Parameters
-**On chat creation:**
-- **Chat name**
-- **Temperature**: Response randomness
-- **Top K**: Number of context messages to retrieve
-- **Context window**: Limits how many tokens will be used to prepare context for model and how many model will have for answer
-- **Use LLM Reranking**: When enabled, LLM scores each retrieved message for relevance (temperature 0.1 for consistency)
-- **System Prompt**: AI personality and behavior
-**Additional global parameters** can be set in ~./rag-terminal/config.yaml:
+### Additional global parameters
+Can be set in ~./rag-terminal/config.yaml:
 - **input_ratio**: What part of total **context window** will be used to inject context to model (default 0.6, so model will receive no more than 0.6 * 4096 = 2457 tokens as context to answer)
 - **excerpts**: What part of **input_ratio** will be used to inject relevant document excerpts
 - **history**: What part of **input_ratio** will be used to inject relevant parts of conversation history
