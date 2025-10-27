@@ -76,12 +76,11 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: artifacts
+          merge-multiple: true
 
-      - name: Prepare release assets
+      - name: List downloaded files
         run: |
-          mkdir -p release
-          find artifacts -type f -exec mv {} release/ \;
-          ls -lh release/
+          ls -lh artifacts/
 
       - name: Generate release tag
         id: tag
@@ -93,7 +92,8 @@ jobs:
         with:
           tag_name: ${{ steps.tag.outputs.tag }}
           name: ${{ steps.tag.outputs.tag }}
-          files: release/*
+          files: artifacts/*
+          fail_on_unmatched_files: true
           draft: false
           prerelease: false
           generate_release_notes: false
