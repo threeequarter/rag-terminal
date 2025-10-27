@@ -88,13 +88,15 @@ jobs:
           echo "tag=release-$(date +'%Y%m%d-%H%M%S')-${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
 
       - name: Create Release
-        uses: softprops/action-gh-release@v2
+        uses: ncipollo/release-action@v1
         with:
-          tag_name: ${{ steps.tag.outputs.tag }}
+          tag: ${{ steps.tag.outputs.tag }}
           name: ${{ steps.tag.outputs.tag }}
-          files: artifacts/*
-          fail_on_unmatched_files: true
+          artifacts: "artifacts/*"
+          artifactErrorsFailBuild: true
           draft: false
           prerelease: false
-          generate_release_notes: false
+          generateReleaseNotes: false
           body: 'Automated release from commit ${{ github.sha }}'
+          allowUpdates: true
+          removeArtifacts: true
