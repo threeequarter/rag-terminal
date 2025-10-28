@@ -45,143 +45,97 @@ func NewPipeline(nexaClient *nexa.Client, vectorStore vector.VectorStore) *Pipel
 	}
 }
 
-// ProcessUserMessage orchestrates the RAG flow
-func (p *Pipeline) ProcessUserMessage(
-	ctx context.Context,
-	chat *vector.Chat,
-	userMessage string,
-) (<-chan string, <-chan error, error) {
-	// Step 1: Generate embedding for user message
-	embeddings, err := p.nexaClient.GenerateEmbeddings(ctx, chat.EmbedModel, []string{userMessage})
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to generate user message embedding: %w", err)
-	}
-	userEmbedding := embeddings[0]
+// groupAndMergeChunkedMessages groups message chunks and merges them into complete messages
+// If any chunk of a message is in the results, all chunks are retrieved and merged
+func (p *Pipeline) groupAndMergeChunkedMessages(ctx context.Context, messages []vector.Message) []vector.Message {
+	// Separate regular messages and chunks
+	regularMessages := []vector.Message{}
+	chunkGroups := make(map[string][]vector.Message) // baseID -> chunks
 
-	// Step 2: Store user message
-	userMsg := models.NewMessage(chat.ID, "user", userMessage)
-	if err := p.vectorStore.StoreMessage(ctx, userMsg.ID, "user", userMessage, userEmbedding, time.Now()); err != nil {
-		return nil, nil, fmt.Errorf("failed to store user message: %w", err)
-	}
-
-	// Step 3: Search for similar messages
-	retrievalTopK := chat.TopK * 2 // Retrieve more for reranking
-	if !chat.UseReranking {
-		retrievalTopK = chat.TopK
+	for _, msg := range messages {
+		if strings.Contains(msg.ID, "-chunk-") {
+			// Extract base message ID (everything before "-chunk-")
+			parts := strings.Split(msg.ID, "-chunk-")
+			if len(parts) == 2 {
+				baseID := parts[0]
+				chunkGroups[baseID] = append(chunkGroups[baseID], msg)
+			}
+		} else {
+			regularMessages = append(regularMessages, msg)
+		}
 	}
 
-	similarMessages, err := p.vectorStore.SearchSimilar(ctx, userEmbedding, retrievalTopK)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to search similar messages: %w", err)
-	}
+	// For each chunk group, retrieve ALL chunks and merge
+	mergedMessages := []vector.Message{}
+	for baseID, chunks := range chunkGroups {
+		// Retrieve all chunks from database for this base ID
+		allChunks, err := p.retrieveAllChunks(ctx, baseID)
+		if err != nil || len(allChunks) == 0 {
+			// Fallback: use what we have
+			allChunks = chunks
+		}
 
-	// Step 4: Optional LLM-based reranking
-	var contextMessages []vector.Message
-	if chat.UseReranking && len(similarMessages) > 0 {
-		contextMessages, err = p.rerankMessagesWithLLM(ctx, chat.LLMModel, userMessage, similarMessages, chat.TopK)
-		if err != nil {
-			// Fall back to similarity-based ranking if LLM reranking fails
-			contextMessages = similarMessages
-			if len(contextMessages) > chat.TopK {
-				contextMessages = contextMessages[:chat.TopK]
+		// Sort chunks by index
+		sort.Slice(allChunks, func(i, j int) bool {
+			return allChunks[i].ID < allChunks[j].ID
+		})
+
+		// Merge chunks into single message
+		var contentBuilder strings.Builder
+		for _, chunk := range allChunks {
+			// Remove "[Part X/Y]" prefix if present
+			content := chunk.Content
+			if strings.HasPrefix(content, "[Part ") {
+				if idx := strings.Index(content, "\n"); idx != -1 {
+					content = content[idx+1:]
+				}
+			}
+			contentBuilder.WriteString(content)
+			if !strings.HasSuffix(content, "\n") {
+				contentBuilder.WriteString("\n")
 			}
 		}
-	} else {
-		contextMessages = similarMessages
-		if len(contextMessages) > chat.TopK {
-			contextMessages = contextMessages[:chat.TopK]
-		}
+
+		// Create merged message using first chunk's metadata
+		mergedMsg := allChunks[0]
+		mergedMsg.ID = baseID
+		mergedMsg.Content = strings.TrimSpace(contentBuilder.String())
+		mergedMessages = append(mergedMessages, mergedMsg)
 	}
 
-	// Step 5: Build prompt with context
-	prompt := p.buildPromptWithContext(chat.SystemPrompt, contextMessages, userMessage)
+	// Combine regular messages and merged messages
+	result := append(regularMessages, mergedMessages...)
 
-	// Step 6: Call chat completion
-	req := nexa.ChatCompletionRequest{
-		Model: chat.LLMModel,
-		Messages: []nexa.ChatMessage{
-			{Role: "system", Content: chat.SystemPrompt},
-			{Role: "user", Content: prompt},
-		},
-		Temperature: chat.Temperature,
-		MaxTokens:   chat.MaxTokens,
-		Stream:      true,
+	// Sort by timestamp to maintain chronological order
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].Timestamp.Before(result[j].Timestamp)
+	})
+
+	return result
+}
+
+// retrieveAllChunks retrieves all chunks for a given base message ID
+func (p *Pipeline) retrieveAllChunks(ctx context.Context, baseID string) ([]vector.Message, error) {
+	badgerStore, ok := p.vectorStore.(*vector.BadgerStore)
+	if !ok {
+		return nil, fmt.Errorf("vector store is not BadgerStore")
 	}
 
-	streamChan, errChan, err := p.nexaClient.ChatCompletion(ctx, req)
+	// Search for all messages with IDs matching baseID-chunk-*
+	allMessages, err := badgerStore.GetAllMessages(ctx)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to start chat completion: %w", err)
+		return nil, err
 	}
 
-	// Step 7: Collect response and store assistant message
-	responseChan := make(chan string, 10)
-	finalErrChan := make(chan error, 1)
-
-	go func() {
-		defer close(responseChan)
-		defer close(finalErrChan)
-
-		var fullResponse strings.Builder
-		for {
-			select {
-			case token, ok := <-streamChan:
-				if !ok {
-					// Stream finished, store assistant message WITHOUT embedding initially
-					// to avoid blocking on model switching
-					assistantMsg := models.NewMessage(chat.ID, "assistant", fullResponse.String())
-
-					// Store with empty embedding first
-					emptyEmbedding := make([]float32, 0)
-					if err := p.vectorStore.StoreMessage(ctx, assistantMsg.ID, "assistant", fullResponse.String(), emptyEmbedding, time.Now()); err != nil {
-						finalErrChan <- fmt.Errorf("failed to store assistant message: %w", err)
-						return
-					}
-
-					// Capture chat context BEFORE launching background goroutine
-					// This prevents race conditions when user switches chats
-					capturedChatID := chat.ID
-					capturedMessageID := assistantMsg.ID
-					capturedContent := fullResponse.String()
-					capturedEmbedModel := chat.EmbedModel
-
-					// Generate embedding asynchronously in background
-					// This allows the UI to continue while embedding happens
-					go func() {
-						// Give SDK time to unload LLM before requesting embedder
-						time.Sleep(500 * time.Millisecond)
-
-						embeddings, err := p.nexaClient.GenerateEmbeddings(context.Background(), capturedEmbedModel, []string{capturedContent})
-						if err != nil {
-							// Log error but don't fail - message is already stored
-							return
-						}
-
-						// Use StoreMessageToChat to write to the SPECIFIC chat without changing current context
-						// This ensures the message goes to the correct chat even if user has switched chats
-						if badgerStore, ok := p.vectorStore.(*vector.BadgerStore); ok {
-							badgerStore.StoreMessageToChat(context.Background(), capturedChatID, capturedMessageID, "assistant", capturedContent, embeddings[0], time.Now())
-						}
-					}()
-
-					return
-				}
-				fullResponse.WriteString(token)
-				responseChan <- token
-
-			case err := <-errChan:
-				if err != nil {
-					finalErrChan <- err
-					return
-				}
-
-			case <-ctx.Done():
-				finalErrChan <- ctx.Err()
-				return
-			}
+	chunks := []vector.Message{}
+	prefix := baseID + "-chunk-"
+	for _, msg := range allMessages {
+		if strings.HasPrefix(msg.ID, prefix) {
+			chunks = append(chunks, msg)
 		}
-	}()
+	}
 
-	return responseChan, finalErrChan, nil
+	return chunks, nil
 }
 
 func (p *Pipeline) rerankMessagesWithLLM(ctx context.Context, llmModel, query string, messages []vector.Message, topK int) ([]vector.Message, error) {
@@ -276,15 +230,24 @@ func (p *Pipeline) rerankMessagesWithLLM(ctx context.Context, llmModel, query st
 func (p *Pipeline) buildPromptWithContext(systemPrompt string, contextMessages []vector.Message, userMessage string) string {
 	var builder strings.Builder
 
-	if len(contextMessages) > 0 {
-		builder.WriteString("Context from previous conversations (all relevant):\n\n")
-		for i, msg := range contextMessages {
-			builder.WriteString(fmt.Sprintf("%d. [%s]: %s\n", i+1, msg.Role, msg.Content))
+	// Filter out messages with identical content to current message (to avoid treating first message as context)
+	var relevantContext []vector.Message
+	for _, msg := range contextMessages {
+		if msg.Content != userMessage {
+			relevantContext = append(relevantContext, msg)
 		}
-		builder.WriteString("\nUse information from all conversations above to answer.\n\n")
 	}
 
-	builder.WriteString("Current message: ")
+	if len(relevantContext) > 0 {
+		builder.WriteString("You have access to the following previous conversation history for reference:\n\n")
+		for _, msg := range relevantContext {
+			builder.WriteString(fmt.Sprintf("[%s]: %s\n\n", msg.Role, msg.Content))
+		}
+		builder.WriteString("Use the above context to help answer the user's question if relevant.\n\n")
+		builder.WriteString("---\n\n")
+	}
+
+	builder.WriteString("User's question or message to you: ")
 	builder.WriteString(userMessage)
 
 	return builder.String()
@@ -293,25 +256,38 @@ func (p *Pipeline) buildPromptWithContext(systemPrompt string, contextMessages [
 func (p *Pipeline) buildPromptWithContextAndDocuments(systemPrompt string, contextMessages []vector.Message, contextChunks []vector.DocumentChunk, userMessage string) string {
 	var builder strings.Builder
 
-	// Add document chunks first (more specific context)
+	// Add document chunks first (most specific context)
 	if len(contextChunks) > 0 {
-		builder.WriteString("Relevant document excerpts:\n\n")
+		builder.WriteString("You have access to the following relevant document excerpts:\n\n")
 		for i, chunk := range contextChunks {
-			builder.WriteString(fmt.Sprintf("%d. [doc: %s]\n%s\n\n", i+1, chunk.FilePath, chunk.Content))
+			builder.WriteString(fmt.Sprintf("[Document %d: %s]\n%s\n\n", i+1, chunk.FilePath, chunk.Content))
 		}
 		builder.WriteString("---\n\n")
 	}
 
-	// Add conversation context
-	if len(contextMessages) > 0 {
-		builder.WriteString("Context from previous conversations:\n\n")
-		for i, msg := range contextMessages {
-			builder.WriteString(fmt.Sprintf("%d. [%s]: %s\n", i+1, msg.Role, msg.Content))
+	// Filter out messages with identical content to current message (to avoid treating first message as context)
+	var relevantContext []vector.Message
+	for _, msg := range contextMessages {
+		if msg.Content != userMessage {
+			relevantContext = append(relevantContext, msg)
 		}
-		builder.WriteString("\n---\n\n")
 	}
 
-	builder.WriteString("Current message: ")
+	// Add conversation context
+	if len(relevantContext) > 0 {
+		builder.WriteString("Previous conversation history:\n\n")
+		for _, msg := range relevantContext {
+			builder.WriteString(fmt.Sprintf("[%s]: %s\n\n", msg.Role, msg.Content))
+		}
+		builder.WriteString("---\n\n")
+	}
+
+	if len(contextChunks) > 0 || len(relevantContext) > 0 {
+		builder.WriteString("Use the above information to help answer the user's question.\n\n")
+		builder.WriteString("---\n\n")
+	}
+
+	builder.WriteString("User's question or message to you: ")
 	builder.WriteString(userMessage)
 
 	return builder.String()
@@ -385,12 +361,20 @@ func (p *Pipeline) buildPromptWithContextAndDocumentsAndFileList(chat *vector.Ch
 	}
 
 	// Layer 3: Conversation history (uses HistoryBudget)
-	if len(contextMessages) > 0 {
-		builder.WriteString("# Previous Context\n")
+	// Filter out messages with identical content to current message (to avoid treating first message as context)
+	var relevantContext []vector.Message
+	for _, msg := range contextMessages {
+		if msg.Content != userMessage {
+			relevantContext = append(relevantContext, msg)
+		}
+	}
+
+	if len(relevantContext) > 0 {
+		builder.WriteString("# Previous Conversation History\n")
 
 		historyCharsRemaining := budget.HistoryBudget * CharsPerToken
 
-		for _, msg := range contextMessages {
+		for _, msg := range relevantContext {
 			if historyCharsRemaining <= 0 {
 				break // Budget exhausted
 			}
@@ -410,14 +394,105 @@ func (p *Pipeline) buildPromptWithContextAndDocumentsAndFileList(chat *vector.Ch
 			builder.WriteString(msgText)
 			historyCharsRemaining -= len(msgText)
 		}
-		builder.WriteString("\n")
+		builder.WriteString("\n---\n\n")
+	}
+
+	// Instruction to use context
+	if len(allDocs) > 0 || len(contextChunks) > 0 || len(relevantContext) > 0 {
+		builder.WriteString("Use the above information to help answer the user's question.\n\n")
+		builder.WriteString("---\n\n")
 	}
 
 	// Current query (full detail - not budget-limited as it's essential)
-	builder.WriteString("# Current Query\n")
+	builder.WriteString("# User's question or message to you: ")
 	builder.WriteString(userMessage)
 
 	return builder.String()
+}
+
+// chunkAndStoreQAPair chunks a Q&A pair text if it exceeds token limits and stores each chunk with embeddings
+// This prevents errors when Q&A pairs exceed the embedding model's max sequence length (1024 tokens)
+func (p *Pipeline) chunkAndStoreQAPair(ctx context.Context, chat *vector.Chat, qaText string) error {
+	// Conservative token limit per chunk to account for:
+	// 1. Imperfect char-to-token estimation (varies by language/content)
+	// 2. Prefix text added to chunks ("[Part X/Y]")
+	// 3. Safety margin for embedding model's 1024 token hard limit
+	const maxTokensPerChunk = 300 // Very safe limit: 300 * 4 = 1200 chars << 1024 tokens
+
+	// Estimate tokens in Q&A text using conservative 4 chars/token ratio
+	estimatedTokens := EstimateTokens(qaText)
+
+	// If small enough, store as single context message
+	if estimatedTokens <= maxTokensPerChunk {
+		qaEmbeddings, err := p.nexaClient.GenerateEmbeddings(ctx, chat.EmbedModel, []string{qaText})
+		if err != nil {
+			return fmt.Errorf("failed to generate Q&A pair embedding: %w", err)
+		}
+
+		qaPairMsg := models.NewMessage(chat.ID, "context", qaText)
+		if err := p.vectorStore.StoreMessage(ctx, qaPairMsg.ID, "context", qaText, qaEmbeddings[0], time.Now()); err != nil {
+			return fmt.Errorf("failed to store Q&A pair: %w", err)
+		}
+
+		return nil
+	}
+
+	// Q&A pair is too long, need to chunk it
+	logging.Info("Q&A pair is long (%d tokens estimated), chunking into smaller pieces", estimatedTokens)
+
+	// Use existing chunker with conservative chunk size for Q&A pairs
+	chunker := document.NewChunker()
+	chunker.ChunkSize = maxTokensPerChunk * CharsPerToken // Convert tokens to chars (300 * 4 = 1200)
+	chunker.ChunkOverlap = 50                             // Small overlap to maintain context
+
+	chunks := chunker.ChunkDocument(qaText)
+	logging.Info("Split Q&A pair into %d chunks", len(chunks))
+
+	// Generate base ID for all chunks
+	baseID := models.NewMessage(chat.ID, "context", "").ID
+
+	// Prepare all chunk contents for batch embedding with safety validation
+	chunkContents := make([]string, 0, len(chunks))
+	validChunkIndices := make([]int, 0, len(chunks))
+
+	for i, chunk := range chunks {
+		// Prefix each chunk with abbreviated context so it's still meaningful
+		prefix := fmt.Sprintf("[Part %d/%d] ", i+1, len(chunks))
+		chunkContent := prefix + chunk.Content
+
+		// Safety check: validate chunk size before embedding
+		// Embedding model has hard limit of 1024 tokens
+		// Use conservative estimate: if > 800 tokens (3200 chars), truncate
+		const maxSafeTokens = 800
+		const maxSafeChars = maxSafeTokens * CharsPerToken // 3200 chars
+
+		if len(chunkContent) > maxSafeChars {
+			logging.Info("Chunk %d exceeds safe size (%d chars), truncating to %d chars",
+				i, len(chunkContent), maxSafeChars)
+			chunkContent = chunkContent[:maxSafeChars] + "..."
+		}
+
+		chunkContents = append(chunkContents, chunkContent)
+		validChunkIndices = append(validChunkIndices, i)
+	}
+
+	// Generate embeddings for all chunks in batch
+	embeddings, err := p.nexaClient.GenerateEmbeddings(ctx, chat.EmbedModel, chunkContents)
+	if err != nil {
+		return fmt.Errorf("failed to generate embeddings for Q&A chunks: %w", err)
+	}
+
+	// Store each chunk as separate context message with chunk ID
+	for i, chunkContent := range chunkContents {
+		chunkID := fmt.Sprintf("%s-chunk-%d", baseID, i)
+
+		if err := p.vectorStore.StoreMessage(ctx, chunkID, "context", chunkContent, embeddings[i], time.Now()); err != nil {
+			return fmt.Errorf("failed to store Q&A chunk %d: %w", i, err)
+		}
+	}
+
+	logging.Info("Successfully stored %d Q&A chunks", len(chunkContents))
+	return nil
 }
 
 // LoadDocuments loads documents from a file or directory path
@@ -532,14 +607,14 @@ func (p *Pipeline) LoadDocuments(ctx context.Context, chat *vector.Chat, path st
 			queryEmbedding := embeddings[0]
 			logging.Debug("Query embedding generated (dim=%d)", len(queryEmbedding))
 
-			// Store user query as message
+			// Store user query as message WITHOUT embedding (will be embedded as Q&A pair later)
 			userMsg := models.NewMessage(chat.ID, "user", query)
-			if err := p.vectorStore.StoreMessage(ctx, userMsg.ID, "user", query, queryEmbedding, time.Now()); err != nil {
+			if err := p.vectorStore.StoreMessage(ctx, userMsg.ID, "user", query, []float32{}, time.Now()); err != nil {
 				logging.Error("Failed to store user query: %v", err)
 				errorChan <- fmt.Errorf("failed to store user query: %w", err)
 				return
 			}
-			logging.Debug("Stored user query message")
+			logging.Debug("Stored user query message (without embedding)")
 
 			// Search for relevant context (both messages and document chunks)
 			retrievalTopK := chat.TopK
@@ -586,6 +661,8 @@ func (p *Pipeline) LoadDocuments(ctx context.Context, chat *vector.Chat, path st
 				},
 				Temperature: chat.Temperature,
 				MaxTokens:   chat.MaxTokens,
+				TopK:        chat.TopK,
+				Nctx:        chat.ContextWindow,
 				Stream:      true,
 			}
 
@@ -601,32 +678,26 @@ func (p *Pipeline) LoadDocuments(ctx context.Context, chat *vector.Chat, path st
 				select {
 				case token, ok := <-streamChan:
 					if !ok {
-						// Store assistant response
-						assistantMsg := models.NewMessage(chat.ID, "assistant", fullResponse.String())
+						// Store assistant message and Q&A pair
+						assistantContent := fullResponse.String()
 
-						// Store with empty embedding first
-						emptyEmbedding := make([]float32, 0)
-						if err := p.vectorStore.StoreMessage(ctx, assistantMsg.ID, "assistant", fullResponse.String(), emptyEmbedding, time.Now()); err != nil {
+						// First, store the assistant message WITHOUT embedding (for display purposes)
+						assistantMsg := models.NewMessage(chat.ID, "assistant", assistantContent)
+						if err := p.vectorStore.StoreMessage(ctx, assistantMsg.ID, "assistant", assistantContent, []float32{}, time.Now()); err != nil {
+							logging.Error("Failed to store assistant message: %v", err)
 							errorChan <- fmt.Errorf("failed to store assistant message: %w", err)
 							return
 						}
 
-						// Generate embedding asynchronously
-						capturedChatID := chat.ID
-						capturedMessageID := assistantMsg.ID
-						capturedContent := fullResponse.String()
-						capturedEmbedModel := chat.EmbedModel
+						// Now create and store the Q&A pair with embedding (for retrieval purposes)
+						qaText := fmt.Sprintf("Previously user asked: %s\nYou answered: %s", query, assistantContent)
 
-						go func() {
-							time.Sleep(500 * time.Millisecond)
-							embeddings, err := p.nexaClient.GenerateEmbeddings(context.Background(), capturedEmbedModel, []string{capturedContent})
-							if err != nil {
-								return
-							}
-							if badgerStore, ok := p.vectorStore.(*vector.BadgerStore); ok {
-								badgerStore.StoreMessageToChat(context.Background(), capturedChatID, capturedMessageID, "assistant", capturedContent, embeddings[0], time.Now())
-							}
-						}()
+						// Use chunking helper to handle long Q&A pairs
+						if err := p.chunkAndStoreQAPair(ctx, chat, qaText); err != nil {
+							logging.Error("Failed to chunk and store Q&A pair: %v", err)
+							errorChan <- fmt.Errorf("failed to store Q&A pair: %w", err)
+							return
+						}
 
 						return
 					}
@@ -795,9 +866,9 @@ func (p *Pipeline) LoadMultipleDocuments(ctx context.Context, chat *vector.Chat,
 			}
 			queryEmbedding := embeddings[0]
 
-			// Store user query as message
+			// Store user query as message WITHOUT embedding (will be embedded as Q&A pair later)
 			userMsg := models.NewMessage(chat.ID, "user", query)
-			if err := p.vectorStore.StoreMessage(ctx, userMsg.ID, "user", query, queryEmbedding, time.Now()); err != nil {
+			if err := p.vectorStore.StoreMessage(ctx, userMsg.ID, "user", query, []float32{}, time.Now()); err != nil {
 				logging.Error("Failed to store user query: %v", err)
 				errorChan <- fmt.Errorf("failed to store user query: %w", err)
 				return
@@ -829,6 +900,8 @@ func (p *Pipeline) LoadMultipleDocuments(ctx context.Context, chat *vector.Chat,
 				},
 				Temperature: chat.Temperature,
 				MaxTokens:   chat.MaxTokens,
+				TopK:        chat.TopK,
+				Nctx:        chat.ContextWindow,
 				Stream:      true,
 			}
 
@@ -846,28 +919,26 @@ func (p *Pipeline) LoadMultipleDocuments(ctx context.Context, chat *vector.Chat,
 				select {
 				case token, ok := <-streamChan:
 					if !ok {
-						// Store assistant response
-						assistantMsg := models.NewMessage(chat.ID, "assistant", fullResponse.String())
-						if err := p.vectorStore.StoreMessage(ctx, assistantMsg.ID, "assistant", fullResponse.String(), []float32{}, time.Now()); err != nil {
+						// Store assistant message and Q&A pair
+						assistantContent := fullResponse.String()
+
+						// First, store the assistant message WITHOUT embedding (for display purposes)
+						assistantMsg := models.NewMessage(chat.ID, "assistant", assistantContent)
+						if err := p.vectorStore.StoreMessage(ctx, assistantMsg.ID, "assistant", assistantContent, []float32{}, time.Now()); err != nil {
 							logging.Error("Failed to store assistant message: %v", err)
+							errorChan <- fmt.Errorf("failed to store assistant message: %w", err)
+							return
 						}
 
-						// Update embedding asynchronously
-						capturedChatID := chat.ID
-						capturedMessageID := assistantMsg.ID
-						capturedContent := fullResponse.String()
-						capturedEmbedModel := chat.EmbedModel
+						// Now create and store the Q&A pair with embedding (for retrieval purposes)
+						qaText := fmt.Sprintf("Previously user asked: %s\nYou answered: %s", query, assistantContent)
 
-						go func() {
-							time.Sleep(500 * time.Millisecond)
-							embeddings, err := p.nexaClient.GenerateEmbeddings(context.Background(), capturedEmbedModel, []string{capturedContent})
-							if err != nil {
-								return
-							}
-							if badgerStore, ok := p.vectorStore.(*vector.BadgerStore); ok {
-								badgerStore.StoreMessageToChat(context.Background(), capturedChatID, capturedMessageID, "assistant", capturedContent, embeddings[0], time.Now())
-							}
-						}()
+						// Use chunking helper to handle long Q&A pairs
+						if err := p.chunkAndStoreQAPair(ctx, chat, qaText); err != nil {
+							logging.Error("Failed to chunk and store Q&A pair: %v", err)
+							errorChan <- fmt.Errorf("failed to store Q&A pair: %w", err)
+							return
+						}
 
 						return
 					}
@@ -893,16 +964,17 @@ func (p *Pipeline) ProcessUserMessageWithDocuments(
 	chat *vector.Chat,
 	userMessage string,
 ) (<-chan string, <-chan error, error) {
-	// Step 1: Generate embedding for user message
+	// Step 1: Generate embedding for user message (for retrieval purposes)
 	embeddings, err := p.nexaClient.GenerateEmbeddings(ctx, chat.EmbedModel, []string{userMessage})
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to generate user message embedding: %w", err)
 	}
 	userEmbedding := embeddings[0]
 
-	// Step 2: Store user message
+	// Step 2: Store user message WITHOUT embedding (will be embedded as Q&A pair later)
+	// We pass empty embedding to avoid immediate indexing
 	userMsg := models.NewMessage(chat.ID, "user", userMessage)
-	if err := p.vectorStore.StoreMessage(ctx, userMsg.ID, "user", userMessage, userEmbedding, time.Now()); err != nil {
+	if err := p.vectorStore.StoreMessage(ctx, userMsg.ID, "user", userMessage, []float32{}, time.Now()); err != nil {
 		return nil, nil, fmt.Errorf("failed to store user message: %w", err)
 	}
 
@@ -920,7 +992,8 @@ func (p *Pipeline) ProcessUserMessageWithDocuments(
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to search similar content: %w", err)
 		}
-		contextMessages = msgs
+		// Merge chunked messages into complete messages
+		contextMessages = p.groupAndMergeChunkedMessages(ctx, msgs)
 		contextChunks = chunks
 
 		// Check if user mentioned specific filenames - if so, prioritize chunks from those files
@@ -944,7 +1017,8 @@ func (p *Pipeline) ProcessUserMessageWithDocuments(
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to search similar messages: %w", err)
 		}
-		contextMessages = msgs
+		// Merge chunked messages into complete messages
+		contextMessages = p.groupAndMergeChunkedMessages(ctx, msgs)
 	}
 
 	// Step 4: Optional LLM-based reranking (only for messages for now)
@@ -990,6 +1064,8 @@ func (p *Pipeline) ProcessUserMessageWithDocuments(
 		},
 		Temperature: chat.Temperature,
 		MaxTokens:   chat.MaxTokens,
+		TopK:        chat.TopK,
+		Nctx:        chat.ContextWindow,
 		Stream:      true,
 	}
 
@@ -1011,29 +1087,24 @@ func (p *Pipeline) ProcessUserMessageWithDocuments(
 			select {
 			case token, ok := <-streamChan:
 				if !ok {
-					assistantMsg := models.NewMessage(chat.ID, "assistant", fullResponse.String())
+					// Store assistant message and Q&A pair
+					assistantContent := fullResponse.String()
 
-					emptyEmbedding := make([]float32, 0)
-					if err := p.vectorStore.StoreMessage(ctx, assistantMsg.ID, "assistant", fullResponse.String(), emptyEmbedding, time.Now()); err != nil {
+					// First, store the assistant message WITHOUT embedding (for display purposes)
+					assistantMsg := models.NewMessage(chat.ID, "assistant", assistantContent)
+					if err := p.vectorStore.StoreMessage(ctx, assistantMsg.ID, "assistant", assistantContent, []float32{}, time.Now()); err != nil {
 						finalErrChan <- fmt.Errorf("failed to store assistant message: %w", err)
 						return
 					}
 
-					capturedChatID := chat.ID
-					capturedMessageID := assistantMsg.ID
-					capturedContent := fullResponse.String()
-					capturedEmbedModel := chat.EmbedModel
+					// Now create and store the Q&A pair with embedding (for retrieval purposes)
+					qaText := fmt.Sprintf("Previously user asked: %s\nYou answered: %s", userMessage, assistantContent)
 
-					go func() {
-						time.Sleep(500 * time.Millisecond)
-						embeddings, err := p.nexaClient.GenerateEmbeddings(context.Background(), capturedEmbedModel, []string{capturedContent})
-						if err != nil {
-							return
-						}
-						if badgerStore, ok := p.vectorStore.(*vector.BadgerStore); ok {
-							badgerStore.StoreMessageToChat(context.Background(), capturedChatID, capturedMessageID, "assistant", capturedContent, embeddings[0], time.Now())
-						}
-					}()
+					// Use chunking helper to handle long Q&A pairs
+					if err := p.chunkAndStoreQAPair(ctx, chat, qaText); err != nil {
+						finalErrChan <- fmt.Errorf("failed to store Q&A pair: %w", err)
+						return
+					}
 
 					return
 				}
