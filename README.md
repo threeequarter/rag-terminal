@@ -16,7 +16,7 @@ A Go-based RAG (Retrieval-Augmented Generation) chat application with a Bubblete
 - **Code-Aware Chunking**: Preserves code structure by chunking at function/class boundaries instead of arbitrary sizes
 - **Multilingual Support**: Automatic language detection and stop word filtering for English, German, French, Spanish, and Russian
 - **Multi-File Support**: Load and compare multiple files in a single message
-- **LLM-based Reranking**: Scores and reranks retrieved context for relevance
+- **LLM-based Reranking**: Scores and reranks retrieved context for relevance (applied only to conversation messages)
 - **File-Specific Queries**: Prioritizes content from mentioned files
 - **Model Selection**: Choose from available LLM and embedding models
 - **Chat Management**: Create, list, and delete chat conversations

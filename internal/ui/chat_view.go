@@ -632,6 +632,11 @@ func (m *ChatViewModel) renderMessages() {
 	var b strings.Builder
 
 	for _, msg := range m.messages {
+		// Skip "context" messages - they're only for retrieval, not display
+		if msg.Role == "context" {
+			continue
+		}
+
 		if msg.Role == "user" {
 			label := UserMessageLabelStyle.Render("You:")
 

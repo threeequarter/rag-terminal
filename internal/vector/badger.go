@@ -427,6 +427,48 @@ func (s *BadgerStore) StoreDocument(ctx context.Context, doc *Document) error {
 	})
 }
 
+// GetAllMessages retrieves all messages from the current chat
+func (s *BadgerStore) GetAllMessages(ctx context.Context) ([]Message, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if s.currentDB == nil {
+		return nil, fmt.Errorf("no chat is currently open")
+	}
+
+	var messages []Message
+	prefix := []byte("msg:")
+
+	err := s.currentDB.View(func(txn *badger.Txn) error {
+		opts := badger.DefaultIteratorOptions
+		opts.Prefix = prefix
+		it := txn.NewIterator(opts)
+		defer it.Close()
+
+		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
+			item := it.Item()
+			err := item.Value(func(val []byte) error {
+				var msg Message
+				if err := json.Unmarshal(val, &msg); err != nil {
+					return err
+				}
+				messages = append(messages, msg)
+				return nil
+			})
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to retrieve messages: %w", err)
+	}
+
+	return messages, nil
+}
+
 // StoreDocumentChunk stores a document chunk with its embedding
 func (s *BadgerStore) StoreDocumentChunk(ctx context.Context, chunk *DocumentChunk) error {
 	s.mu.RLock()
