@@ -10,9 +10,9 @@ import (
 
 // Cleaner provides text cleaning and normalization functions
 type Cleaner struct {
-	multipleSpacesRegex  *regexp.Regexp
+	multipleSpacesRegex   *regexp.Regexp
 	multipleNewlinesRegex *regexp.Regexp
-	tabsRegex            *regexp.Regexp
+	tabsRegex             *regexp.Regexp
 }
 
 // NewCleaner creates a new text cleaner
@@ -24,7 +24,7 @@ func NewCleaner() *Cleaner {
 	}
 }
 
-// CleanText performs comprehensive text cleaning to optimize for LLM context
+// CleanText performs text cleaning to optimize for LLM context
 func (c *Cleaner) CleanText(text string) string {
 	// Remove zero-width characters and other invisible unicode
 	text = c.removeInvisibleCharacters(text)

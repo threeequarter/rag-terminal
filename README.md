@@ -12,7 +12,7 @@ A Go-based RAG (Retrieval-Augmented Generation) chat application with a Bubblete
 - **Interactive TUI**: Built with Bubbletea for a clean terminal interface
 - **RAG Pipeline**: Retrieval-Augmented Generation with vector similarity search
 - **Document Processing**: Load and embed documents from files or directories
-- **Content Optimization**: Smart excerpt extraction and text normalization for efficient token usage
+- **Content Optimization**: Excerpt extraction and text normalization for efficient token usage
 - **Code-Aware Chunking**: Preserves code structure by chunking at function/class boundaries instead of arbitrary sizes
 - **Multilingual Support**: Automatic language detection and stop word filtering for English, German, French, Spanish, and Russian
 - **Multi-File Support**: Load and compare multiple files in a single message

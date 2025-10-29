@@ -21,7 +21,7 @@ type Config struct {
 // TokenBudgetConfig defines how available input tokens are allocated
 type TokenBudgetConfig struct {
 	// InputRatio: percentage of context window allocated for input tokens (0.0-1.0)
-	// The remainder is implicitly reserved for output
+	// The remainder is reserved for output
 	// Default: 0.6 (60% for input, 40% for output)
 	InputRatio float64 `yaml:"input_ratio"`
 
@@ -30,19 +30,14 @@ type TokenBudgetConfig struct {
 
 	// History: percentage of available input tokens for conversation history (0.0-1.0)
 	History float64 `yaml:"history"`
-
-	// Chunks: percentage allocated for full document chunks (calculated as remainder)
-	// This field is not in config file, it's calculated as: 1.0 - Excerpts - History
 }
 
-// DefaultConfig returns the default configuration
 func DefaultConfig() *Config {
 	return &Config{
 		TokenBudget: TokenBudgetConfig{
 			InputRatio: 0.6, // 60% of context window for input
 			Excerpts:   0.3, // 30% of input for excerpts
 			History:    0.1, // 10% of input for history
-			// Chunks is implicitly 0.6 (60% of input)
 		},
 	}
 }

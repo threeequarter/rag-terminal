@@ -61,7 +61,6 @@ func CalculateTokenBudget(contextWindow, maxTokens int, cfg *config.Config) *Tok
 }
 
 // EstimateTokens estimates the number of tokens in a text string
-// Uses a simple character-to-token ratio (4:1)
 func EstimateTokens(text string) int {
 	return len(text) / CharsPerToken
 }

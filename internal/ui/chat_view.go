@@ -39,7 +39,8 @@ const (
 
 type ChatViewModel struct {
 	chat            *vector.Chat
-	pipeline        *rag.Pipeline
+	pipeline        rag.Pipeline
+	documentManager *document.DocumentManager
 	vectorStore     vector.VectorStore
 	messages        []vector.Message
 	viewport        viewport.Model
@@ -157,7 +158,7 @@ func (m *ChatViewModel) safeRenderMarkdown(content string) string {
 	return strings.TrimRight(rendered, "\n")
 }
 
-func NewChatViewModel(chat *vector.Chat, pipeline *rag.Pipeline, vectorStore vector.VectorStore, width, height int) ChatViewModel {
+func NewChatViewModel(chat *vector.Chat, pipeline rag.Pipeline, vectorStore vector.VectorStore, width, height int) ChatViewModel {
 	ta := textarea.New()
 	ta.Placeholder = "Type your message, drop file or folder..."
 	ta.Focus()
@@ -211,9 +212,10 @@ func NewChatViewModel(chat *vector.Chat, pipeline *rag.Pipeline, vectorStore vec
 	mdRenderer := createMarkdownRenderer(width)
 
 	return ChatViewModel{
-		chat:         chat,
-		pipeline:     pipeline,
-		vectorStore:  vectorStore,
+		chat:            chat,
+		pipeline:        pipeline,
+		documentManager: pipeline.GetDocumentManager(),
+		vectorStore:     vectorStore,
 		viewport:     vp,
 		textarea:     ta,
 		spinner:      sp,
@@ -565,7 +567,7 @@ func (m ChatViewModel) sendMessage(userMessage string) tea.Cmd {
 			logging.Info("Processing %d document path(s), query='%s'", len(multiPathResult.Paths), query)
 
 			// Load multiple documents through pipeline
-			streamChan, errChan, err := m.pipeline.LoadMultipleDocuments(m.ctx, m.chat, multiPathResult.Paths, query)
+			streamChan, errChan, err := m.documentManager.LoadMultipleDocuments(m.ctx, m.chat, multiPathResult.Paths)
 			if err != nil {
 				logging.Error("LoadMultipleDocuments failed: %v", err)
 				return ChatResponseError{Err: err}
@@ -576,9 +578,9 @@ func (m ChatViewModel) sendMessage(userMessage string) tea.Cmd {
 
 		// No path detected, process as regular message with document support
 		logging.Debug("No path detected, processing as regular message")
-		streamChan, errChan, err := m.pipeline.ProcessUserMessageWithDocuments(m.ctx, m.chat, userMessage)
+		streamChan, errChan, err := m.pipeline.ProcessUserMessage(m.ctx, m.chat, userMessage)
 		if err != nil {
-			logging.Error("ProcessUserMessageWithDocuments failed: %v", err)
+			logging.Error("ProcessUserMessage failed: %v", err)
 			return ChatResponseError{Err: err}
 		}
 
