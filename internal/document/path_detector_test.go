@@ -209,13 +209,13 @@ func TestExtractQuery(t *testing.T) {
 	tests := []struct {
 		name     string
 		input    string
-		paths    []PathDetectionResultV2
+		paths    []pathDetectionResultInternal
 		expected string
 	}{
 		{
 			name:  "Query before path",
 			input: "Compare this file C:\\test.txt",
-			paths: []PathDetectionResultV2{
+			paths: []pathDetectionResultInternal{
 				{StartIdx: 18, EndIdx: 29},
 			},
 			expected: "Compare this file",
@@ -223,7 +223,7 @@ func TestExtractQuery(t *testing.T) {
 		{
 			name:  "Query after path",
 			input: "C:\\test.txt and analyze it",
-			paths: []PathDetectionResultV2{
+			paths: []pathDetectionResultInternal{
 				{StartIdx: 0, EndIdx: 11},
 			},
 			expected: "and analyze it",
@@ -231,7 +231,7 @@ func TestExtractQuery(t *testing.T) {
 		{
 			name:  "Query between paths",
 			input: "C:\\file1.txt and C:\\file2.txt",
-			paths: []PathDetectionResultV2{
+			paths: []pathDetectionResultInternal{
 				{StartIdx: 0, EndIdx: 12},
 				{StartIdx: 17, EndIdx: 29},
 			},

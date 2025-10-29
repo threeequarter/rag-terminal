@@ -10,11 +10,7 @@ const (
 	DefaultChunkSize = 1000
 
 	// DefaultChunkOverlap is the number of characters to overlap between chunks
-	// Reduced from 200 to 50 to maximize unique content in LLM context window
 	DefaultChunkOverlap = 50
-
-	// MaxChunkSize is the maximum allowed chunk size
-	MaxChunkSize = 2000
 )
 
 // Chunker splits documents into overlapping chunks for embedding
@@ -179,7 +175,7 @@ func (c *Chunker) findLastSentenceEnd(content string, start, end int) int {
 	return -1
 }
 
-// GetChunkWithContext returns a chunk with some surrounding context for better embedding
+// GetChunkWithContext returns a chunk with some surrounding context for embedding
 func (c *Chunker) GetChunkWithContext(content string, chunk Chunk, contextSize int) string {
 	// Add context before
 	contextStart := chunk.StartPos - contextSize

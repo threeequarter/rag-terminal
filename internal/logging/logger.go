@@ -25,8 +25,6 @@ var (
 )
 
 // InitLogger initializes the logger based on RT_LOGS environment variable
-// RT_LOGS values: debug, info, error
-// Logs are written to ~/.rag-terminal/logs/rag-YYYY-MM-DD.log
 func InitLogger() error {
 	rtLogs := os.Getenv("RT_LOGS")
 	if rtLogs == "" {

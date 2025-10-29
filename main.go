@@ -29,7 +29,7 @@ type model struct {
 	state       appState
 	nexaClient  *nexa.Client
 	vectorStore vector.VectorStore
-	pipeline    *rag.Pipeline
+	pipeline    rag.Pipeline
 
 	// UI models
 	modelSelectModel ui.ModelSelectModel

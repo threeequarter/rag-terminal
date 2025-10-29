@@ -126,8 +126,7 @@ Key points:`, content)
 	return keyPoints, nil
 }
 
-// GenerateExtractiveSummary creates a summary by selecting key sentences (no LLM needed)
-// This is faster and cheaper than LLM summarization
+// GenerateExtractiveSummary creates a summary by selecting key sentences
 func (s *Summarizer) GenerateExtractiveSummary(content string, targetLength int) string {
 	extractor := NewExtractor()
 

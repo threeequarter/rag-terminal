@@ -31,7 +31,6 @@ func NewExtractorWithLanguage(language string) *Extractor {
 }
 
 // ExtractRelevantExcerpt extracts the most relevant portion of a chunk for a query
-// Reduces chunk size while preserving the most relevant content
 func (e *Extractor) ExtractRelevantExcerpt(chunkContent string, query string, maxLength int) string {
 	// Auto-detect language from content if not explicitly set
 	if e.language == "en" && len(chunkContent) > 100 {

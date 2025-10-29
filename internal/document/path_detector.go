@@ -2,58 +2,94 @@ package document
 
 import (
 	"os"
-	"path/filepath"
 	"strings"
 )
 
 // PathDetectionResult holds the result of path detection in user input
 type PathDetectionResult struct {
-	HasPath      bool   // Whether a valid path was detected
-	Path         string // The detected file or folder path
-	QueryBefore  string // Text before the path
-	QueryAfter   string // Text after the path
-	IsFile       bool   // True if path points to a file
-	IsDirectory  bool   // True if path points to a directory
-	Exists       bool   // Whether the path exists on filesystem
+	HasPath     bool   // Whether a valid path was detected
+	Path        string // The detected file or folder path
+	IsFile      bool   // True if path points to a file
+	IsDirectory bool   // True if path points to a directory
+	Exists      bool   // Whether the path exists on filesystem
 }
 
-// DetectPath attempts to extract a file or folder path from user input
-// Supports patterns:
-// - "C:\path\to\file.txt"
-// - "C:\path\to\folder"
-// - 'C:\temp count files'           (path + query)
-// - 'Count files in C:\temp'        (query + path)
-// - 'Count files in C:\temp total'  (query + path + query)
-func DetectPath(input string) PathDetectionResult {
-	result := PathDetectionResult{
-		HasPath: false,
+// MultiPathDetectionResult holds multiple detected paths
+type MultiPathDetectionResult struct {
+	HasPaths bool                  // Whether any valid paths were detected
+	Paths    []PathDetectionResult // All detected paths
+	Query    string                // Remaining query text (without paths)
+}
+
+// pathDetectionResultInternal holds the result with position information for internal processing
+type pathDetectionResultInternal struct {
+	HasPath     bool   // Whether a valid path was detected
+	Path        string // The detected file or folder path
+	StartIdx    int    // Start position in original string
+	EndIdx      int    // End position in original string
+	IsFile      bool   // True if path points to a file
+	IsDirectory bool   // True if path points to a directory
+	Exists      bool   // Whether the path exists on filesystem
+}
+
+// DetectAllPaths detects all file/folder paths in user input (Windows, Linux, macOS)
+func DetectAllPaths(input string) MultiPathDetectionResult {
+	result := MultiPathDetectionResult{
+		HasPaths: false,
+		Paths:    []PathDetectionResult{},
 	}
 
-	// Try to find Windows absolute paths by looking for drive letter patterns
-	// Split input into tokens and try to build paths
-	var candidatePaths []struct {
-		path      string
-		startIdx  int
-		endIdx    int
-		info      os.FileInfo
+	var detectedPaths []pathDetectionResultInternal
+
+	// Detect Windows paths (C:\, D:\, etc.)
+	windowsPaths := detectWindowsPaths(input)
+	detectedPaths = append(detectedPaths, windowsPaths...)
+
+	// Detect Unix paths (/home/, /usr/, etc.)
+	unixPaths := detectUnixPaths(input)
+	detectedPaths = append(detectedPaths, unixPaths...)
+
+	// If no paths found, return empty result
+	if len(detectedPaths) == 0 {
+		result.Query = input
+		return result
 	}
 
-	// Look for drive letter pattern (C:, D:, etc.)
+	// Sort paths by start position
+	sortPathsByPosition(detectedPaths)
+
+	// Convert to PathDetectionResult and extract query
+	result.HasPaths = true
+	result.Query = extractQuery(input, detectedPaths)
+
+	for _, path := range detectedPaths {
+		result.Paths = append(result.Paths, PathDetectionResult{
+			HasPath:     true,
+			Path:        path.Path,
+			IsFile:      path.IsFile,
+			IsDirectory: path.IsDirectory,
+			Exists:      path.Exists,
+		})
+	}
+
+	return result
+}
+
+// detectWindowsPaths finds Windows-style paths (C:\, D:\, etc.)
+func detectWindowsPaths(input string) []pathDetectionResultInternal {
+	var paths []pathDetectionResultInternal
+
 	for i := 0; i < len(input)-2; i++ {
-		// Check for drive letter pattern: [A-Z]:
+		// Check for drive letter pattern: [A-Z]:\ or [A-Z]:/
 		if (input[i] >= 'A' && input[i] <= 'Z' || input[i] >= 'a' && input[i] <= 'z') &&
-			input[i+1] == ':' && (i+2 < len(input) && input[i+2] == '\\') {
+			input[i+1] == ':' && (i+2 < len(input) && (input[i+2] == '\\' || input[i+2] == '/')) {
 
-			// Found potential start of Windows path
-			// Extract path by reading until whitespace or end
 			pathStart := i
-			pathEnd := pathStart + 3 // Start after C:\
+			pathEnd := pathStart + 3
 
 			// Read until we hit something that definitely can't be a path
-			// We'll be greedy and read everything, then trim back
 			for pathEnd < len(input) {
 				ch := input[pathEnd]
-				// Stop at characters that are definitely not in Windows paths
 				if ch == '\r' || ch == '\n' || ch == '\t' {
 					break
 				}
@@ -62,18 +98,15 @@ func DetectPath(input string) PathDetectionResult {
 
 			candidatePath := input[pathStart:pathEnd]
 
-			// Try progressively shorter paths starting from the longest
-			// This handles cases like "C:\path\to\file.txt extra text"
+			// Try progressively shorter paths
 			for len(candidatePath) > 3 {
-				// Clean up trailing whitespace and backslashes
-				candidatePath = strings.TrimRight(candidatePath, " \t\\")
+				candidatePath = strings.TrimRight(candidatePath, " \t\\/")
 
-				// Skip if it ends with invalid path characters
+				// Skip if ends with invalid characters
 				if len(candidatePath) > 0 {
 					lastChar := candidatePath[len(candidatePath)-1]
 					if lastChar == '<' || lastChar == '>' || lastChar == '|' ||
 						lastChar == '"' || lastChar == '*' || lastChar == '?' || lastChar == ':' {
-						// Remove this character and try again
 						candidatePath = candidatePath[:len(candidatePath)-1]
 						continue
 					}
@@ -81,99 +114,198 @@ func DetectPath(input string) PathDetectionResult {
 
 				// Test if this path exists
 				if info, err := os.Stat(candidatePath); err == nil {
-					candidatePaths = append(candidatePaths, struct {
-						path      string
-						startIdx  int
-						endIdx    int
-						info      os.FileInfo
-					}{
-						path:     candidatePath,
-						startIdx: pathStart,
-						endIdx:   pathStart + len(candidatePath),
-						info:     info,
+					paths = append(paths, pathDetectionResultInternal{
+						HasPath:     true,
+						Path:        candidatePath,
+						StartIdx:    pathStart,
+						EndIdx:      pathStart + len(candidatePath),
+						IsFile:      !info.IsDir(),
+						IsDirectory: info.IsDir(),
+						Exists:      true,
 					})
 					break
 				}
 
-				// Try removing last token (space-separated word or path component)
-				// First try removing after last space
+				// Try removing last component
 				if lastSpace := strings.LastIndex(candidatePath, " "); lastSpace > 3 {
 					candidatePath = candidatePath[:lastSpace]
 					continue
 				}
 
-				// Then try removing last path component
-				lastBackslash := strings.LastIndex(candidatePath, "\\")
-				if lastBackslash <= 2 { // Don't go before "C:\"
+				lastSep := strings.LastIndexAny(candidatePath, "\\/")
+				if lastSep <= 2 {
 					break
 				}
-				candidatePath = candidatePath[:lastBackslash]
+				candidatePath = candidatePath[:lastSep]
+			}
+
+			// Skip past this path in the search
+			if len(paths) > 0 && paths[len(paths)-1].StartIdx == pathStart {
+				i = paths[len(paths)-1].EndIdx - 1
 			}
 		}
 	}
 
-	// Pick the longest valid path
-	var bestCandidate *struct {
-		path      string
-		startIdx  int
-		endIdx    int
-		info      os.FileInfo
-	}
+	return paths
+}
 
-	for i := range candidatePaths {
-		if bestCandidate == nil || len(candidatePaths[i].path) > len(bestCandidate.path) {
-			bestCandidate = &candidatePaths[i]
+// detectUnixPaths finds Unix-style paths (/home/, /usr/, etc.)
+func detectUnixPaths(input string) []pathDetectionResultInternal {
+	var paths []pathDetectionResultInternal
+
+	for i := 0; i < len(input); i++ {
+		// Check for absolute Unix path: starts with /
+		if input[i] == '/' {
+			// Make sure it's not just a slash in a URL or something
+			// Unix paths typically start with /home, /usr, /var, /tmp, /etc, /opt, etc.
+			if !isLikelyUnixPath(input, i) {
+				continue
+			}
+
+			pathStart := i
+			pathEnd := pathStart + 1
+
+			// Read until whitespace or end
+			for pathEnd < len(input) {
+				ch := input[pathEnd]
+				if ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n' || ch == ',' || ch == ';' {
+					break
+				}
+				pathEnd++
+			}
+
+			candidatePath := input[pathStart:pathEnd]
+
+			// Try progressively shorter paths
+			for len(candidatePath) > 1 {
+				candidatePath = strings.TrimRight(candidatePath, " \t/")
+
+				// Skip if ends with invalid characters
+				if len(candidatePath) > 0 {
+					lastChar := candidatePath[len(candidatePath)-1]
+					if lastChar == '<' || lastChar == '>' || lastChar == '|' ||
+						lastChar == '"' || lastChar == '*' || lastChar == '?' {
+						candidatePath = candidatePath[:len(candidatePath)-1]
+						continue
+					}
+				}
+
+				// Test if this path exists
+				if info, err := os.Stat(candidatePath); err == nil {
+					paths = append(paths, pathDetectionResultInternal{
+						HasPath:     true,
+						Path:        candidatePath,
+						StartIdx:    pathStart,
+						EndIdx:      pathStart + len(candidatePath),
+						IsFile:      !info.IsDir(),
+						IsDirectory: info.IsDir(),
+						Exists:      true,
+					})
+					break
+				}
+
+				// Try removing last component
+				if lastSpace := strings.LastIndex(candidatePath, " "); lastSpace > 1 {
+					candidatePath = candidatePath[:lastSpace]
+					continue
+				}
+
+				lastSep := strings.LastIndex(candidatePath, "/")
+				if lastSep <= 0 {
+					break
+				}
+				candidatePath = candidatePath[:lastSep]
+			}
+
+			// Skip past this path in the search
+			if len(paths) > 0 && paths[len(paths)-1].StartIdx == pathStart {
+				i = paths[len(paths)-1].EndIdx - 1
+			}
 		}
 	}
 
-	if bestCandidate == nil {
-		return result
-	}
-
-	// Found a valid path
-	result.HasPath = true
-	result.Path = bestCandidate.path
-	result.Exists = true
-	result.IsFile = !bestCandidate.info.IsDir()
-	result.IsDirectory = bestCandidate.info.IsDir()
-
-	// Extract queries before and after the path
-	if bestCandidate.startIdx > 0 {
-		result.QueryBefore = strings.TrimSpace(input[:bestCandidate.startIdx])
-	}
-
-	if bestCandidate.endIdx < len(input) {
-		result.QueryAfter = strings.TrimSpace(input[bestCandidate.endIdx:])
-	}
-
-	return result
+	return paths
 }
 
-// GetFullQuery combines before and after queries into a single query string
-func (r PathDetectionResult) GetFullQuery() string {
-	parts := []string{}
-
-	if r.QueryBefore != "" {
-		parts = append(parts, r.QueryBefore)
+// isLikelyUnixPath checks if a slash at position i is likely the start of a Unix path
+func isLikelyUnixPath(input string, i int) bool {
+	// Check if preceded by whitespace or at start
+	if i > 0 {
+		prev := input[i-1]
+		if prev != ' ' && prev != '\t' && prev != '\n' && prev != ',' && prev != '(' && prev != '[' {
+			return false
+		}
 	}
 
-	if r.QueryAfter != "" {
-		parts = append(parts, r.QueryAfter)
+	// Check for common Unix path prefixes
+	commonPrefixes := []string{
+		"/home/", "/usr/", "/var/", "/tmp/", "/etc/", "/opt/",
+		"/bin/", "/sbin/", "/lib/", "/mnt/", "/media/", "/root/",
+		"/Applications/", "/Users/", "/System/", "/Library/", // macOS
 	}
 
-	return strings.TrimSpace(strings.Join(parts, " "))
+	remaining := input[i:]
+	for _, prefix := range commonPrefixes {
+		if strings.HasPrefix(remaining, prefix) {
+			return true
+		}
+	}
+
+	// If it has multiple slashes, likely a path
+	if strings.Count(remaining[:minInt(len(remaining), 50)], "/") >= 2 {
+		return true
+	}
+
+	return false
 }
 
-// GetAbsolutePath returns the absolute path, resolving any relative components
-func (r PathDetectionResult) GetAbsolutePath() (string, error) {
-	if !r.HasPath {
-		return "", nil
+// sortPathsByPosition sorts paths by their start position
+func sortPathsByPosition(paths []pathDetectionResultInternal) {
+	for i := 0; i < len(paths); i++ {
+		for j := i + 1; j < len(paths); j++ {
+			if paths[j].StartIdx < paths[i].StartIdx {
+				paths[i], paths[j] = paths[j], paths[i]
+			}
+		}
 	}
-	return filepath.Abs(r.Path)
 }
 
-// ShouldProcessPath returns true if the path should be processed
-// (exists and is either a file or directory)
-func (r PathDetectionResult) ShouldProcessPath() bool {
-	return r.HasPath && r.Exists && (r.IsFile || r.IsDirectory)
+// extractQuery extracts the query text by removing detected paths
+func extractQuery(input string, paths []pathDetectionResultInternal) string {
+	if len(paths) == 0 {
+		return input
+	}
+
+	// Build query by removing path segments
+	var queryParts []string
+	lastEnd := 0
+
+	for _, path := range paths {
+		// Add text before this path
+		if path.StartIdx > lastEnd {
+			part := strings.TrimSpace(input[lastEnd:path.StartIdx])
+			if part != "" {
+				queryParts = append(queryParts, part)
+			}
+		}
+		lastEnd = path.EndIdx
+	}
+
+	// Add text after last path
+	if lastEnd < len(input) {
+		part := strings.TrimSpace(input[lastEnd:])
+		if part != "" {
+			queryParts = append(queryParts, part)
+		}
+	}
+
+	return strings.Join(queryParts, " ")
+}
+
+// minInt returns the minimum of two integers
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
