@@ -8,8 +8,9 @@ import (
 )
 
 type EmbeddingRequest struct {
-	Model string   `json:"model"`
-	Input []string `json:"input"`
+	Model      string   `json:"model"`
+	Input      []string `json:"input"`
+	Dimensions *int     `json:"dimensions,omitempty"`
 }
 
 type EmbeddingResponse struct {
@@ -24,14 +25,15 @@ type EmbeddingResponse struct {
 	} `json:"usage"`
 }
 
-func (c *Client) GenerateEmbeddings(ctx context.Context, model string, texts []string) ([][]float32, error) {
+func (c *Client) GenerateEmbeddings(ctx context.Context, model string, texts []string, dimensions *int) ([][]float32, error) {
 	if len(texts) == 0 {
 		return nil, fmt.Errorf("no texts provided for embedding")
 	}
 
 	req := EmbeddingRequest{
-		Model: model,
-		Input: texts,
+		Model:      model,
+		Input:      texts,
+		Dimensions: dimensions,
 	}
 
 	resp, err := c.doRequest(ctx, "POST", "/v1/embeddings", req)

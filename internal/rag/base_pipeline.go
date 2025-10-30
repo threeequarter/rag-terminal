@@ -40,7 +40,7 @@ func NewPipeline(nexaClient *nexa.Client, vectorStore vector.VectorStore) *baseP
 		nexaClient:      nexaClient,
 		vectorStore:     vectorStore,
 		config:          cfg,
-		documentManager: document.NewDocumentManager(nexaClient, vectorStore),
+		documentManager: document.NewDocumentManager(nexaClient, vectorStore, cfg),
 	}
 
 	// Initialize both pipeline implementations with shared base
@@ -448,7 +448,7 @@ func (p *basePipeline) chunkAndStoreQAPair(ctx context.Context, chat *vector.Cha
 
 	// If small enough, store as single context message
 	if estimatedTokens <= maxTokensPerChunk {
-		qaEmbeddings, err := p.nexaClient.GenerateEmbeddings(ctx, chat.EmbedModel, []string{qaText})
+		qaEmbeddings, err := p.nexaClient.GenerateEmbeddings(ctx, chat.EmbedModel, []string{qaText}, &p.config.EmbeddingDimensions)
 		if err != nil {
 			return fmt.Errorf("failed to generate Q&A pair embedding: %w", err)
 		}
@@ -496,7 +496,7 @@ func (p *basePipeline) chunkAndStoreQAPair(ctx context.Context, chat *vector.Cha
 	}
 
 	// Generate embeddings for all chunks in batch
-	embeddings, err := p.nexaClient.GenerateEmbeddings(ctx, chat.EmbedModel, chunkContents)
+	embeddings, err := p.nexaClient.GenerateEmbeddings(ctx, chat.EmbedModel, chunkContents, &p.config.EmbeddingDimensions)
 	if err != nil {
 		return fmt.Errorf("failed to generate embeddings for Q&A chunks: %w", err)
 	}
@@ -562,8 +562,8 @@ func (p *basePipeline) processDocument(
 	}
 
 	// Generate embeddings for all chunks in batch
-	logging.Debug("Generating embeddings for %d chunks of %s", len(chunks), doc.FileName)
-	embeddings, err := p.nexaClient.GenerateEmbeddings(ctx, chat.EmbedModel, chunkContents)
+	logging.Debug("Generating embeddings for %d chunks of %s with dimensions=%d", len(chunks), doc.FileName, p.config.EmbeddingDimensions)
+	embeddings, err := p.nexaClient.GenerateEmbeddings(ctx, chat.EmbedModel, chunkContents, &p.config.EmbeddingDimensions)
 	if err != nil {
 		logging.Error("Failed to generate embeddings for %s: %v", doc.FileName, err)
 		return fmt.Errorf("failed to generate embeddings for %s: %w", doc.FileName, err)

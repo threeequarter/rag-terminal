@@ -22,7 +22,7 @@ func (p *SimplePipeline) ProcessUserMessage(
 	userMessage string,
 ) (<-chan string, <-chan error, error) {
 	// Step 1: Generate embedding for user message
-	embeddings, err := p.nexaClient.GenerateEmbeddings(ctx, chat.EmbedModel, []string{userMessage})
+	embeddings, err := p.nexaClient.GenerateEmbeddings(ctx, chat.EmbedModel, []string{userMessage}, &p.config.EmbeddingDimensions)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to generate user message embedding: %w", err)
 	}

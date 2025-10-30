@@ -15,7 +15,8 @@ const (
 
 // Config represents the application configuration
 type Config struct {
-	TokenBudget TokenBudgetConfig `yaml:"token_budget"`
+	TokenBudget         TokenBudgetConfig `yaml:"token_budget"`
+	EmbeddingDimensions int               `yaml:"embedding_dimensions"`
 }
 
 // TokenBudgetConfig defines how available input tokens are allocated
@@ -39,6 +40,7 @@ func DefaultConfig() *Config {
 			Excerpts:   0.3, // 30% of input for excerpts
 			History:    0.1, // 10% of input for history
 		},
+		EmbeddingDimensions: 786, // Default embedding dimensions for Nexa API
 	}
 }
 
@@ -158,6 +160,11 @@ func (c *Config) Validate() error {
 	sum := c.TokenBudget.Excerpts + c.TokenBudget.History
 	if sum > 1.0 {
 		return fmt.Errorf("token_budget.excerpts + token_budget.history must not exceed 1.0, got %f", sum)
+	}
+
+	// Validate EmbeddingDimensions
+	if c.EmbeddingDimensions <= 0 {
+		return fmt.Errorf("embedding_dimensions must be positive, got %d", c.EmbeddingDimensions)
 	}
 
 	return nil
