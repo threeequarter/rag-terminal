@@ -15,7 +15,9 @@ const (
 
 // Config represents the application configuration
 type Config struct {
-	TokenBudget TokenBudgetConfig `yaml:"token_budget"`
+	TokenBudget         TokenBudgetConfig `yaml:"token_budget"`
+	CodeTokenBudget     TokenBudgetConfig `yaml:"code_token_budget"`
+	EmbeddingDimensions int               `yaml:"embedding_dimensions"`
 }
 
 // TokenBudgetConfig defines how available input tokens are allocated
@@ -34,11 +36,19 @@ type TokenBudgetConfig struct {
 
 func DefaultConfig() *Config {
 	return &Config{
+		// Token budget for text/document files
 		TokenBudget: TokenBudgetConfig{
 			InputRatio: 0.6, // 60% of context window for input
 			Excerpts:   0.3, // 30% of input for excerpts
 			History:    0.1, // 10% of input for history
 		},
+		// Token budget for code files (SQL, Go, Python, etc.)
+		CodeTokenBudget: TokenBudgetConfig{
+			InputRatio: 0.7,  // 70% for input (code analysis needs more input, less output)
+			Excerpts:   0.15, // 15% for excerpts (code uses syntax-aware extraction, less excerpt needed)
+			History:    0.05, // 5% for history (prioritize code context over conversation)
+		},
+		EmbeddingDimensions: 786,
 	}
 }
 
@@ -139,25 +149,45 @@ func Save(cfg *Config) error {
 
 // Validate validates the configuration values
 func (c *Config) Validate() error {
+	// Validate text token budget
+	if err := c.validateTokenBudget("token_budget", &c.TokenBudget); err != nil {
+		return err
+	}
+
+	// Validate code token budget
+	if err := c.validateTokenBudget("code_token_budget", &c.CodeTokenBudget); err != nil {
+		return err
+	}
+
+	// Validate EmbeddingDimensions
+	if c.EmbeddingDimensions <= 0 {
+		return fmt.Errorf("embedding_dimensions must be positive, got %d", c.EmbeddingDimensions)
+	}
+
+	return nil
+}
+
+// validateTokenBudget validates a token budget configuration
+func (c *Config) validateTokenBudget(name string, budget *TokenBudgetConfig) error {
 	// Validate InputRatio
-	if c.TokenBudget.InputRatio < 0.0 || c.TokenBudget.InputRatio > 1.0 {
-		return fmt.Errorf("token_budget.input_ratio must be between 0.0 and 1.0, got %f", c.TokenBudget.InputRatio)
+	if budget.InputRatio < 0.0 || budget.InputRatio > 1.0 {
+		return fmt.Errorf("%s.input_ratio must be between 0.0 and 1.0, got %f", name, budget.InputRatio)
 	}
 
 	// Validate Excerpts
-	if c.TokenBudget.Excerpts < 0.0 || c.TokenBudget.Excerpts > 1.0 {
-		return fmt.Errorf("token_budget.excerpts must be between 0.0 and 1.0, got %f", c.TokenBudget.Excerpts)
+	if budget.Excerpts < 0.0 || budget.Excerpts > 1.0 {
+		return fmt.Errorf("%s.excerpts must be between 0.0 and 1.0, got %f", name, budget.Excerpts)
 	}
 
 	// Validate History
-	if c.TokenBudget.History < 0.0 || c.TokenBudget.History > 1.0 {
-		return fmt.Errorf("token_budget.history must be between 0.0 and 1.0, got %f", c.TokenBudget.History)
+	if budget.History < 0.0 || budget.History > 1.0 {
+		return fmt.Errorf("%s.history must be between 0.0 and 1.0, got %f", name, budget.History)
 	}
 
 	// Validate sum doesn't exceed 1.0
-	sum := c.TokenBudget.Excerpts + c.TokenBudget.History
+	sum := budget.Excerpts + budget.History
 	if sum > 1.0 {
-		return fmt.Errorf("token_budget.excerpts + token_budget.history must not exceed 1.0, got %f", sum)
+		return fmt.Errorf("%s.excerpts + %s.history must not exceed 1.0, got %f", name, name, sum)
 	}
 
 	return nil

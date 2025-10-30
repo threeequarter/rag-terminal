@@ -22,7 +22,7 @@ func (p *SimplePipeline) ProcessUserMessage(
 	userMessage string,
 ) (<-chan string, <-chan error, error) {
 	// Step 1: Generate embedding for user message
-	embeddings, err := p.nexaClient.GenerateEmbeddings(ctx, chat.EmbedModel, []string{userMessage})
+	embeddings, err := p.nexaClient.GenerateEmbeddings(ctx, chat.EmbedModel, []string{userMessage}, &p.config.EmbeddingDimensions)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to generate user message embedding: %w", err)
 	}
@@ -34,19 +34,16 @@ func (p *SimplePipeline) ProcessUserMessage(
 		return nil, nil, fmt.Errorf("failed to store user message: %w", err)
 	}
 
-	// Step 3: Search for similar messages (conversation history only, no documents)
+	// Step 3: Search for similar Q&A pairs (conversation history only, no documents)
 	retrievalTopK := chat.TopK
 	if chat.UseReranking {
 		retrievalTopK = chat.TopK * 2
 	}
 
-	msgs, err := p.vectorStore.SearchSimilar(ctx, userEmbedding, retrievalTopK)
+	contextMessages, err := p.vectorStore.SearchSimilar(ctx, userEmbedding, retrievalTopK)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to search similar messages: %w", err)
 	}
-
-	// Merge chunked messages into complete messages
-	contextMessages := p.groupAndMergeChunkedMessages(ctx, msgs)
 
 	// Step 4: Optional LLM-based reranking
 	if chat.UseReranking && len(contextMessages) > 0 {

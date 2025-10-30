@@ -40,7 +40,7 @@ func NewPipeline(nexaClient *nexa.Client, vectorStore vector.VectorStore) *baseP
 		nexaClient:      nexaClient,
 		vectorStore:     vectorStore,
 		config:          cfg,
-		documentManager: document.NewDocumentManager(nexaClient, vectorStore),
+		documentManager: document.NewDocumentManager(nexaClient, vectorStore, cfg),
 	}
 
 	// Initialize both pipeline implementations with shared base
@@ -335,7 +335,25 @@ func (p *basePipeline) buildPromptWithContextAndDocumentsAndFileList(chat *vecto
 		maxTokens = 2048 // Fallback to default
 	}
 
-	budget := CalculateTokenBudget(contextWindow, maxTokens, p.config)
+	// Detect if we're working with code files
+	isCodeFile := false
+	if len(contextChunks) > 0 {
+		// Check first chunk to determine file type
+		isCodeFile = document.IsCodeFile(contextChunks[0].FilePath)
+	} else if len(allDocs) > 0 {
+		// Check first document
+		isCodeFile = document.IsCodeFile(allDocs[0].FilePath)
+	}
+
+	// Use appropriate budget configuration
+	budget := CalculateTokenBudgetForType(contextWindow, maxTokens, p.config, isCodeFile)
+	if isCodeFile {
+		logging.Info("Using code-optimized token budget (input: %d, excerpts: %d, history: %d, chunks: %d)",
+			budget.AvailableInput, budget.ExcerptsBudget, budget.HistoryBudget, budget.ChunksBudget)
+	} else {
+		logging.Debug("Using default token budget (input: %d, excerpts: %d, history: %d, chunks: %d)",
+			budget.AvailableInput, budget.ExcerptsBudget, budget.HistoryBudget, budget.ChunksBudget)
+	}
 
 	// HIERARCHICAL CONTEXT STRUCTURE
 	// Layer 1: Document overview (uses FileListBudget)
@@ -377,7 +395,7 @@ func (p *basePipeline) buildPromptWithContextAndDocumentsAndFileList(chat *vecto
 				break // Not enough space for meaningful excerpt
 			}
 
-			excerpt := extractor.ExtractRelevantExcerpt(chunk.Content, userMessage, maxExcerptSize)
+			excerpt := extractor.ExtractRelevantExcerptWithPath(chunk.Content, userMessage, maxExcerptSize, chunk.FilePath)
 			fileName := filepath.Base(chunk.FilePath)
 
 			chunkText := fmt.Sprintf("[%s]\n%s\n\n", fileName, excerpt)
@@ -448,7 +466,7 @@ func (p *basePipeline) chunkAndStoreQAPair(ctx context.Context, chat *vector.Cha
 
 	// If small enough, store as single context message
 	if estimatedTokens <= maxTokensPerChunk {
-		qaEmbeddings, err := p.nexaClient.GenerateEmbeddings(ctx, chat.EmbedModel, []string{qaText})
+		qaEmbeddings, err := p.nexaClient.GenerateEmbeddings(ctx, chat.EmbedModel, []string{qaText}, &p.config.EmbeddingDimensions)
 		if err != nil {
 			return fmt.Errorf("failed to generate Q&A pair embedding: %w", err)
 		}
@@ -496,7 +514,7 @@ func (p *basePipeline) chunkAndStoreQAPair(ctx context.Context, chat *vector.Cha
 	}
 
 	// Generate embeddings for all chunks in batch
-	embeddings, err := p.nexaClient.GenerateEmbeddings(ctx, chat.EmbedModel, chunkContents)
+	embeddings, err := p.nexaClient.GenerateEmbeddings(ctx, chat.EmbedModel, chunkContents, &p.config.EmbeddingDimensions)
 	if err != nil {
 		return fmt.Errorf("failed to generate embeddings for Q&A chunks: %w", err)
 	}
@@ -562,8 +580,8 @@ func (p *basePipeline) processDocument(
 	}
 
 	// Generate embeddings for all chunks in batch
-	logging.Debug("Generating embeddings for %d chunks of %s", len(chunks), doc.FileName)
-	embeddings, err := p.nexaClient.GenerateEmbeddings(ctx, chat.EmbedModel, chunkContents)
+	logging.Debug("Generating embeddings for %d chunks of %s with dimensions=%d", len(chunks), doc.FileName, p.config.EmbeddingDimensions)
+	embeddings, err := p.nexaClient.GenerateEmbeddings(ctx, chat.EmbedModel, chunkContents, &p.config.EmbeddingDimensions)
 	if err != nil {
 		logging.Error("Failed to generate embeddings for %s: %v", doc.FileName, err)
 		return fmt.Errorf("failed to generate embeddings for %s: %w", doc.FileName, err)

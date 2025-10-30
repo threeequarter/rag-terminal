@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	"rag-terminal/internal/config"
 	"rag-terminal/internal/logging"
 	"rag-terminal/internal/nexa"
 	"rag-terminal/internal/vector"
@@ -16,13 +17,15 @@ import (
 type DocumentManager struct {
 	nexaClient  *nexa.Client
 	vectorStore vector.VectorStore
+	config      *config.Config
 }
 
 // NewDocumentManager creates a new document manager
-func NewDocumentManager(nexaClient *nexa.Client, vectorStore vector.VectorStore) *DocumentManager {
+func NewDocumentManager(nexaClient *nexa.Client, vectorStore vector.VectorStore, cfg *config.Config) *DocumentManager {
 	return &DocumentManager{
 		nexaClient:  nexaClient,
 		vectorStore: vectorStore,
+		config:      cfg,
 	}
 }
 
@@ -198,8 +201,8 @@ func (dm *DocumentManager) ProcessDocument(
 	}
 
 	// Generate embeddings for all chunks in batch
-	logging.Debug("Generating embeddings for %d chunks of %s", len(chunks), doc.FileName)
-	embeddings, err := dm.nexaClient.GenerateEmbeddings(ctx, chat.EmbedModel, chunkContents)
+	logging.Debug("Generating embeddings for %d chunks of %s with dimensions=%d", len(chunks), doc.FileName, dm.config.EmbeddingDimensions)
+	embeddings, err := dm.nexaClient.GenerateEmbeddings(ctx, chat.EmbedModel, chunkContents, &dm.config.EmbeddingDimensions)
 	if err != nil {
 		logging.Error("Failed to generate embeddings for %s: %v", doc.FileName, err)
 		return fmt.Errorf("failed to generate embeddings for %s: %w", doc.FileName, err)
@@ -315,8 +318,8 @@ func (dm *DocumentManager) GetAllChunksFromFiles(ctx context.Context, filePaths 
 	}
 
 	// Search with a dummy embedding to get all chunks, then filter by document IDs
-	dummyEmbedding := make([]float32, 768)
-	_, allChunks, err := store.SearchSimilarWithChunks(ctx, dummyEmbedding, 200)
+	dummyEmbedding := make([]float32, dm.config.EmbeddingDimensions)
+	_, allChunks, err := store.SearchSimilarContextAndChunks(ctx, dummyEmbedding, 200)
 	if err != nil {
 		logging.Error("Failed to search chunks: %v", err)
 		return []vector.DocumentChunk{}

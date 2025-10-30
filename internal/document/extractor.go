@@ -32,6 +32,24 @@ func NewExtractorWithLanguage(language string) *Extractor {
 
 // ExtractRelevantExcerpt extracts the most relevant portion of a chunk for a query
 func (e *Extractor) ExtractRelevantExcerpt(chunkContent string, query string, maxLength int) string {
+	return e.ExtractRelevantExcerptWithPath(chunkContent, query, maxLength, "")
+}
+
+// ExtractRelevantExcerptWithPath extracts relevant excerpt with file path awareness
+// If filePath indicates a code file, uses code-aware extraction
+func (e *Extractor) ExtractRelevantExcerptWithPath(chunkContent string, query string, maxLength int, filePath string) string {
+	// Check if this is a code file and use code-aware extraction
+	if filePath != "" && IsCodeFile(filePath) {
+		codeExtractor := NewCodeExtractor(filePath)
+		return codeExtractor.ExtractCodeExcerpt(chunkContent, query, maxLength)
+	}
+
+	// Fall back to original text-based extraction
+	return e.extractTextExcerpt(chunkContent, query, maxLength)
+}
+
+// extractTextExcerpt performs the original text-based extraction
+func (e *Extractor) extractTextExcerpt(chunkContent string, query string, maxLength int) string {
 	// Auto-detect language from content if not explicitly set
 	if e.language == "en" && len(chunkContent) > 100 {
 		detectedLang := DetectLanguage(chunkContent)
