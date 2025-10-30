@@ -335,7 +335,25 @@ func (p *basePipeline) buildPromptWithContextAndDocumentsAndFileList(chat *vecto
 		maxTokens = 2048 // Fallback to default
 	}
 
-	budget := CalculateTokenBudget(contextWindow, maxTokens, p.config)
+	// Detect if we're working with code files
+	isCodeFile := false
+	if len(contextChunks) > 0 {
+		// Check first chunk to determine file type
+		isCodeFile = document.IsCodeFile(contextChunks[0].FilePath)
+	} else if len(allDocs) > 0 {
+		// Check first document
+		isCodeFile = document.IsCodeFile(allDocs[0].FilePath)
+	}
+
+	// Use appropriate budget configuration
+	budget := CalculateTokenBudgetForType(contextWindow, maxTokens, p.config, isCodeFile)
+	if isCodeFile {
+		logging.Info("Using code-optimized token budget (input: %d, excerpts: %d, history: %d, chunks: %d)",
+			budget.AvailableInput, budget.ExcerptsBudget, budget.HistoryBudget, budget.ChunksBudget)
+	} else {
+		logging.Debug("Using default token budget (input: %d, excerpts: %d, history: %d, chunks: %d)",
+			budget.AvailableInput, budget.ExcerptsBudget, budget.HistoryBudget, budget.ChunksBudget)
+	}
 
 	// HIERARCHICAL CONTEXT STRUCTURE
 	// Layer 1: Document overview (uses FileListBudget)
@@ -377,7 +395,7 @@ func (p *basePipeline) buildPromptWithContextAndDocumentsAndFileList(chat *vecto
 				break // Not enough space for meaningful excerpt
 			}
 
-			excerpt := extractor.ExtractRelevantExcerpt(chunk.Content, userMessage, maxExcerptSize)
+			excerpt := extractor.ExtractRelevantExcerptWithPath(chunk.Content, userMessage, maxExcerptSize, chunk.FilePath)
 			fileName := filepath.Base(chunk.FilePath)
 
 			chunkText := fmt.Sprintf("[%s]\n%s\n\n", fileName, excerpt)

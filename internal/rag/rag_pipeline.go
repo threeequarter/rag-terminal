@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"rag-terminal/internal/document"
 	"rag-terminal/internal/logging"
 	"rag-terminal/internal/models"
 	"rag-terminal/internal/nexa"
@@ -58,7 +59,9 @@ func (p *RAGPipeline) ProcessUserMessage(
 	// Check if user mentioned specific filenames - prioritize chunks from those files
 	allDocs, _ := badgerStore.GetDocuments(ctx)
 	mentionedFiles := p.documentManager.FindMentionedFiles(userMessage, allDocs)
-	if len(mentionedFiles) > 0 {
+	userMentionedFile := len(mentionedFiles) > 0
+
+	if userMentionedFile {
 		logging.Info("User mentioned specific files: %v - filtering chunks", mentionedFiles)
 		filteredChunks := p.documentManager.FilterChunksByFiles(contextChunks, mentionedFiles)
 		if len(filteredChunks) == 0 {
@@ -67,6 +70,17 @@ func (p *RAGPipeline) ProcessUserMessage(
 		}
 		contextChunks = filteredChunks
 		logging.Debug("After filename filtering: %d chunks from %d files", len(contextChunks), len(mentionedFiles))
+
+		// Apply smart chunk prioritization for code files
+		if len(contextChunks) > 0 && document.IsCodeFile(contextChunks[0].FilePath) {
+			prioritizer := &CodeChunkPrioritizer{}
+			maxCodeChunks := chat.TopK / 2
+			if maxCodeChunks < 3 {
+				maxCodeChunks = 3 // Minimum for header + some context
+			}
+			contextChunks = prioritizer.PrioritizeCodeChunks(contextChunks, maxCodeChunks)
+			logging.Info("Applied smart prioritization: %d code chunks selected", len(contextChunks))
+		}
 	}
 
 	// Step 4: Optional LLM-based reranking (only for messages for now)
@@ -85,8 +99,10 @@ func (p *RAGPipeline) ProcessUserMessage(
 		}
 	}
 
-	// Limit document chunks
-	if len(contextChunks) > chat.TopK/2 {
+	// Limit document chunks (skip if we already applied smart prioritization for code)
+	appliedSmartPrioritization := userMentionedFile && len(contextChunks) > 0 && document.IsCodeFile(contextChunks[0].FilePath)
+
+	if !appliedSmartPrioritization && len(contextChunks) > chat.TopK/2 {
 		contextChunks = contextChunks[:chat.TopK/2]
 	}
 

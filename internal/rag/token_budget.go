@@ -22,9 +22,28 @@ type TokenBudget struct {
 }
 
 // CalculateTokenBudget calculates token budgets based on context window and config
+// Uses the default (text) token budget configuration
 func CalculateTokenBudget(contextWindow, maxTokens int, cfg *config.Config) *TokenBudget {
+	return CalculateTokenBudgetForType(contextWindow, maxTokens, cfg, false)
+}
+
+// CalculateTokenBudgetForCode calculates token budgets optimized for code files
+func CalculateTokenBudgetForCode(contextWindow, maxTokens int, cfg *config.Config) *TokenBudget {
+	return CalculateTokenBudgetForType(contextWindow, maxTokens, cfg, true)
+}
+
+// CalculateTokenBudgetForType calculates token budgets based on file type
+func CalculateTokenBudgetForType(contextWindow, maxTokens int, cfg *config.Config, isCodeFile bool) *TokenBudget {
+	// Select appropriate budget config based on file type
+	var budgetConfig config.TokenBudgetConfig
+	if isCodeFile {
+		budgetConfig = cfg.CodeTokenBudget
+	} else {
+		budgetConfig = cfg.TokenBudget
+	}
+
 	// Use inputRatio to determine available input tokens
-	inputRatio := cfg.TokenBudget.InputRatio
+	inputRatio := budgetConfig.InputRatio
 	if inputRatio <= 0.0 || inputRatio > 1.0 {
 		inputRatio = 0.5 // Fallback to default
 	}
@@ -35,8 +54,8 @@ func CalculateTokenBudget(contextWindow, maxTokens int, cfg *config.Config) *Tok
 	maxTokens = contextWindow - availableInput
 
 	// Allocate percentages based on config
-	excerptsBudget := int(float64(availableInput) * cfg.TokenBudget.Excerpts)
-	historyBudget := int(float64(availableInput) * cfg.TokenBudget.History)
+	excerptsBudget := int(float64(availableInput) * budgetConfig.Excerpts)
+	historyBudget := int(float64(availableInput) * budgetConfig.History)
 
 	// File list gets a small fixed budget (100 tokens ~= 400 chars)
 	fileListBudget := 100
