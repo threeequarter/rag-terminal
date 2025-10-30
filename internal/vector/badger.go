@@ -115,23 +115,28 @@ func (s *BadgerStore) SearchSimilar(ctx context.Context, queryEmbedding []float3
 		return nil, fmt.Errorf("no chat is currently open")
 	}
 
-	var messages []Message
-	prefix := []byte("msg:")
+	// Only search Q&A pairs (context messages with embeddings) for retrieval
+	// (not individual user/assistant messages which are only for UI display)
+	var contextMessages []Message
 
 	err := s.currentDB.View(func(txn *badger.Txn) error {
 		opts := badger.DefaultIteratorOptions
-		opts.Prefix = prefix
+		opts.Prefix = []byte("msg:")
 		it := txn.NewIterator(opts)
 		defer it.Close()
 
-		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
+		for it.Seek([]byte("msg:")); it.ValidForPrefix([]byte("msg:")); it.Next() {
 			item := it.Item()
 			err := item.Value(func(val []byte) error {
 				var msg Message
 				if err := json.Unmarshal(val, &msg); err != nil {
 					return err
 				}
-				messages = append(messages, msg)
+				// Only include context messages (Q&A pairs) with embeddings 
+				// (individual user/assistant messages should have empty embeddings)
+				if msg.Role == "context" && len(msg.Embedding) > 0 {
+					contextMessages = append(contextMessages, msg)
+				}
 				return nil
 			})
 			if err != nil {
@@ -142,39 +147,39 @@ func (s *BadgerStore) SearchSimilar(ctx context.Context, queryEmbedding []float3
 	})
 
 	if err != nil {
-		return nil, fmt.Errorf("failed to retrieve messages: %w", err)
+		return nil, fmt.Errorf("failed to retrieve context messages: %w", err)
 	}
 
-	// Calculate similarity scores
+	// Calculate similarity scores for context messages (Q&A pairs)
 	type scoredMessage struct {
 		message Message
 		score   float32
 	}
 
-	scored := make([]scoredMessage, 0, len(messages))
-	for _, msg := range messages {
+	scoredMessages := make([]scoredMessage, 0, len(contextMessages))
+	for _, msg := range contextMessages {
 		if len(msg.Embedding) > 0 {
 			score := CosineSimilarity(queryEmbedding, msg.Embedding)
-			scored = append(scored, scoredMessage{message: msg, score: score})
+			scoredMessages = append(scoredMessages, scoredMessage{message: msg, score: score})
 		}
 	}
 
 	// Sort by score descending
-	sort.Slice(scored, func(i, j int) bool {
-		return scored[i].score > scored[j].score
+	sort.Slice(scoredMessages, func(i, j int) bool {
+		return scoredMessages[i].score > scoredMessages[j].score
 	})
 
-	// Take top K
-	if len(scored) > topK {
-		scored = scored[:topK]
+	// Take top K results
+	if len(scoredMessages) > topK {
+		scoredMessages = scoredMessages[:topK]
 	}
 
-	result := make([]Message, len(scored))
-	for i, sm := range scored {
-		result[i] = sm.message
+	resultMessages := make([]Message, len(scoredMessages))
+	for i, sm := range scoredMessages {
+		resultMessages[i] = sm.message
 	}
 
-	return result, nil
+	return resultMessages, nil
 }
 
 func (s *BadgerStore) GetMessages(ctx context.Context) ([]Message, error) {
@@ -616,8 +621,8 @@ func (s *BadgerStore) FindDocumentByHash(ctx context.Context, contentHash string
 	return foundDoc, nil
 }
 
-// SearchSimilarWithChunks searches for similar content including both messages and document chunks
-func (s *BadgerStore) SearchSimilarWithChunks(ctx context.Context, queryEmbedding []float32, topK int) ([]Message, []DocumentChunk, error) {
+// SearchSimilarContextAndChunks searches for similar content including Q&A pairs and document chunks
+func (s *BadgerStore) SearchSimilarContextAndChunks(ctx context.Context, queryEmbedding []float32, topK int) ([]Message, []DocumentChunk, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -625,8 +630,8 @@ func (s *BadgerStore) SearchSimilarWithChunks(ctx context.Context, queryEmbeddin
 		return nil, nil, fmt.Errorf("no chat is currently open")
 	}
 
-	// Get messages
-	var messages []Message
+	// Get Q&A pair messages (context messages with embeddings)
+	var contextMessages []Message
 	msgPrefix := []byte("msg:")
 
 	err := s.currentDB.View(func(txn *badger.Txn) error {
@@ -642,7 +647,10 @@ func (s *BadgerStore) SearchSimilarWithChunks(ctx context.Context, queryEmbeddin
 				if err := json.Unmarshal(val, &msg); err != nil {
 					return err
 				}
-				messages = append(messages, msg)
+				// Only include context messages (Q&A pairs) with embeddings
+				if msg.Role == "context" && len(msg.Embedding) > 0 {
+					contextMessages = append(contextMessages, msg)
+				}
 				return nil
 			})
 			if err != nil {
@@ -653,7 +661,7 @@ func (s *BadgerStore) SearchSimilarWithChunks(ctx context.Context, queryEmbeddin
 	})
 
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to retrieve messages: %w", err)
+		return nil, nil, fmt.Errorf("failed to retrieve context messages: %w", err)
 	}
 
 	// Get document chunks
@@ -687,14 +695,14 @@ func (s *BadgerStore) SearchSimilarWithChunks(ctx context.Context, queryEmbeddin
 		return nil, nil, fmt.Errorf("failed to retrieve chunks: %w", err)
 	}
 
-	// Calculate similarity scores for messages
+	// Calculate similarity scores for context messages (Q&A pairs)
 	type scoredMessage struct {
 		message Message
 		score   float32
 	}
 
-	scoredMessages := make([]scoredMessage, 0, len(messages))
-	for _, msg := range messages {
+	scoredMessages := make([]scoredMessage, 0, len(contextMessages))
+	for _, msg := range contextMessages {
 		if len(msg.Embedding) > 0 {
 			score := CosineSimilarity(queryEmbedding, msg.Embedding)
 			scoredMessages = append(scoredMessages, scoredMessage{message: msg, score: score})

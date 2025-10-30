@@ -316,7 +316,7 @@ func (dm *DocumentManager) GetAllChunksFromFiles(ctx context.Context, filePaths 
 
 	// Search with a dummy embedding to get all chunks, then filter by document IDs
 	dummyEmbedding := make([]float32, 768)
-	_, allChunks, err := store.SearchSimilarWithChunks(ctx, dummyEmbedding, 200)
+	_, allChunks, err := store.SearchSimilarContextAndChunks(ctx, dummyEmbedding, 200)
 	if err != nil {
 		logging.Error("Failed to search chunks: %v", err)
 		return []vector.DocumentChunk{}

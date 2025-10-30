@@ -35,7 +35,7 @@ func (p *RAGPipeline) ProcessUserMessage(
 		return nil, nil, fmt.Errorf("failed to store user message: %w", err)
 	}
 
-	// Step 3: Search for similar content (both messages and document chunks)
+	// Step 3: Search for similar content (Q&A pairs and document chunks only)
 	retrievalTopK := chat.TopK * 2
 	if !chat.UseReranking {
 		retrievalTopK = chat.TopK
@@ -49,20 +49,18 @@ func (p *RAGPipeline) ProcessUserMessage(
 		return nil, nil, fmt.Errorf("vector store is not BadgerStore")
 	}
 
-	msgs, chunks, err := badgerStore.SearchSimilarWithChunks(ctx, userEmbedding, retrievalTopK)
+	// Search for similar Q&A pairs and document chunks (not individual user/assistant messages)
+	contextMessages, contextChunks, err = badgerStore.SearchSimilarContextAndChunks(ctx, userEmbedding, retrievalTopK)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to search similar content: %w", err)
 	}
-	// Merge chunked messages into complete messages
-	contextMessages = p.groupAndMergeChunkedMessages(ctx, msgs)
-	contextChunks = chunks
 
 	// Check if user mentioned specific filenames - prioritize chunks from those files
 	allDocs, _ := badgerStore.GetDocuments(ctx)
 	mentionedFiles := p.documentManager.FindMentionedFiles(userMessage, allDocs)
 	if len(mentionedFiles) > 0 {
 		logging.Info("User mentioned specific files: %v - filtering chunks", mentionedFiles)
-		filteredChunks := p.documentManager.FilterChunksByFiles(chunks, mentionedFiles)
+		filteredChunks := p.documentManager.FilterChunksByFiles(contextChunks, mentionedFiles)
 		if len(filteredChunks) == 0 {
 			logging.Info("No similar chunks from %v, fetching all chunks from files", mentionedFiles)
 			filteredChunks = p.documentManager.GetAllChunksFromFiles(ctx, mentionedFiles)
