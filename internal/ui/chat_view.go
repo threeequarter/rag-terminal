@@ -3,6 +3,7 @@ package ui
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -69,15 +70,22 @@ type ChatViewModel struct {
 }
 
 type ChatMessageReceived struct {
-	Token      string
-	StreamChan <-chan string
-	ErrChan    <-chan error
+	Token           string
+	StreamChan      <-chan string
+	ErrChan         <-chan error
+	OriginalMessage string                        // Original user message with file paths
+	PathResults     []document.PathDetectionResult // Detected file paths to replace
 }
 
 type ChatResponseComplete struct{}
 
 type ChatResponseError struct {
 	Err error
+}
+
+type DocumentLoadingComplete struct {
+	OriginalMessage string
+	PathResults     []document.PathDetectionResult
 }
 
 type StateChange struct {
@@ -377,8 +385,17 @@ func (m ChatViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				var embedded, total int
 				fmt.Sscanf(parts[0], "%d", &embedded)
 				fmt.Sscanf(parts[1], "%d", &total)
+
+				// Choose the correct continuation based on whether we're waiting for document loading + query
+				var continueCmd tea.Cmd
+				if msg.OriginalMessage != "" && len(msg.PathResults) > 0 {
+					continueCmd = waitForDocumentLoadingAndProcessQuery(msg.StreamChan, msg.ErrChan, msg.OriginalMessage, msg.PathResults)
+				} else {
+					continueCmd = waitForStreamToken(msg.StreamChan, msg.ErrChan)
+				}
+
 				return m, tea.Batch(
-					waitForStreamToken(msg.StreamChan, msg.ErrChan),
+					continueCmd,
 					func() tea.Msg {
 						return FileEmbeddingProgress{
 							Embedded: embedded,
@@ -404,7 +421,48 @@ func (m ChatViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.tokenCount++
 
+		// Continue with appropriate handler based on whether we're waiting for document loading
+		if msg.OriginalMessage != "" && len(msg.PathResults) > 0 {
+			return m, waitForDocumentLoadingAndProcessQuery(msg.StreamChan, msg.ErrChan, msg.OriginalMessage, msg.PathResults)
+		}
 		return m, waitForStreamToken(msg.StreamChan, msg.ErrChan)
+
+	case DocumentLoadingComplete:
+		// Document loading complete, now process the message with the LLM
+		// Replace file paths with filenames in the message
+		messageWithFilenames := replacePathsWithFilenames(msg.OriginalMessage, msg.PathResults)
+		logging.Info("Document loading complete, processing message: '%s'", messageWithFilenames)
+
+		// Flush any remaining buffer from document loading progress
+		m.flushStreamBuffer()
+
+		// Store the embedded document count
+		if m.totalFiles > 0 {
+			m.embeddedDocCount = m.totalFiles
+		}
+
+		// Reset document loading counters
+		m.embeddedFiles = 0
+		m.totalFiles = 0
+		m.streamBuffer.Reset()
+
+		// Process the message (with filenames instead of paths) through the pipeline
+		streamChan, errChan, err := m.pipeline.ProcessUserMessage(m.ctx, m.chat, messageWithFilenames)
+		if err != nil {
+			logging.Error("ProcessUserMessage failed after document loading: %v", err)
+			m.processingState = StateIdle
+			m.hasQuery = false
+			return m, func() tea.Msg { return ChatResponseError{Err: err} }
+		}
+
+		// Transition to reranking/thinking state
+		var cmds []tea.Cmd
+		cmds = append(cmds, waitForStreamToken(streamChan, errChan))
+		if m.hasQuery {
+			cmds = append(cmds, m.scheduleStateTransition())
+		}
+
+		return m, tea.Batch(cmds...)
 
 	case ChatResponseComplete:
 		m.flushStreamBuffer()
@@ -573,6 +631,13 @@ func (m ChatViewModel) sendMessage(userMessage string) tea.Cmd {
 				return ChatResponseError{Err: err}
 			}
 
+			// If there's a query, wait for document loading to complete then process the query
+			if strings.TrimSpace(query) != "" {
+				logging.Info("Query detected, will process after document loading")
+				return waitForDocumentLoadingAndProcessQuery(streamChan, errChan, userMessage, multiPathResult.Paths)()
+			}
+
+			// No query, just wait for document loading to complete
 			return waitForStreamToken(streamChan, errChan)()
 		}
 
@@ -586,6 +651,57 @@ func (m ChatViewModel) sendMessage(userMessage string) tea.Cmd {
 
 		return waitForStreamToken(streamChan, errChan)()
 	}
+}
+
+// replacePathsWithFilenames replaces full file paths with just filenames in the message
+func replacePathsWithFilenames(originalMessage string, pathResults []document.PathDetectionResult) string {
+	if len(pathResults) == 0 {
+		return originalMessage
+	}
+
+	// Sort paths by start position in reverse order to replace from end to beginning
+	// This ensures indices remain valid after replacements
+	type pathWithIndices struct {
+		path      string
+		filename  string
+		startIdx  int
+		endIdx    int
+	}
+
+	var paths []pathWithIndices
+	currentIdx := 0
+	for _, pathResult := range pathResults {
+		// Find the path in the message starting from currentIdx
+		idx := strings.Index(originalMessage[currentIdx:], pathResult.Path)
+		if idx >= 0 {
+			actualIdx := currentIdx + idx
+			filename := filepath.Base(pathResult.Path)
+			paths = append(paths, pathWithIndices{
+				path:     pathResult.Path,
+				filename: filename,
+				startIdx: actualIdx,
+				endIdx:   actualIdx + len(pathResult.Path),
+			})
+			currentIdx = actualIdx + len(pathResult.Path)
+		}
+	}
+
+	// Sort in reverse order by start index
+	for i := 0; i < len(paths); i++ {
+		for j := i + 1; j < len(paths); j++ {
+			if paths[j].startIdx > paths[i].startIdx {
+				paths[i], paths[j] = paths[j], paths[i]
+			}
+		}
+	}
+
+	// Replace paths with filenames from end to beginning
+	result := originalMessage
+	for _, p := range paths {
+		result = result[:p.startIdx] + p.filename + result[p.endIdx:]
+	}
+
+	return result
 }
 
 // waitForStreamToken creates a command that waits for the next stream token
@@ -610,6 +726,37 @@ func waitForStreamToken(streamChan <-chan string, errChan <-chan error) tea.Cmd 
 			}
 			// Continue waiting for tokens
 			return waitForStreamToken(streamChan, errChan)()
+		}
+	}
+}
+
+// waitForDocumentLoadingAndProcessQuery waits for document loading to complete, then triggers query processing
+func waitForDocumentLoadingAndProcessQuery(streamChan <-chan string, errChan <-chan error, originalMessage string, pathResults []document.PathDetectionResult) tea.Cmd {
+	return func() tea.Msg {
+		select {
+		case token, ok := <-streamChan:
+			if !ok {
+				// Stream closed, document loading complete
+				return DocumentLoadingComplete{
+					OriginalMessage: originalMessage,
+					PathResults:     pathResults,
+				}
+			}
+			// Return token with channels for continuation
+			return ChatMessageReceived{
+				Token:           token,
+				StreamChan:      streamChan,
+				ErrChan:         errChan,
+				OriginalMessage: originalMessage,
+				PathResults:     pathResults,
+			}
+
+		case err := <-errChan:
+			if err != nil {
+				return ChatResponseError{Err: err}
+			}
+			// Continue waiting for tokens
+			return waitForDocumentLoadingAndProcessQuery(streamChan, errChan, originalMessage, pathResults)()
 		}
 	}
 }
