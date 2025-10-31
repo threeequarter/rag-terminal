@@ -19,10 +19,11 @@ type SimplePipeline struct {
 func (p *SimplePipeline) ProcessUserMessage(
 	ctx context.Context,
 	chat *vector.Chat,
+	llmModel, embedModel string,
 	userMessage string,
 ) (<-chan string, <-chan error, error) {
 	// Step 1: Generate embedding for user message
-	embeddings, err := p.nexaClient.GenerateEmbeddings(ctx, chat.EmbedModel, []string{userMessage}, &p.config.EmbeddingDimensions)
+	embeddings, err := p.nexaClient.GenerateEmbeddings(ctx, embedModel, []string{userMessage}, &p.config.EmbeddingDimensions)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to generate user message embedding: %w", err)
 	}
@@ -47,7 +48,7 @@ func (p *SimplePipeline) ProcessUserMessage(
 
 	// Step 4: Optional LLM-based reranking
 	if chat.UseReranking && len(contextMessages) > 0 {
-		reranked, err := p.rerankMessagesWithLLM(ctx, chat.LLMModel, userMessage, contextMessages, chat.TopK)
+		reranked, err := p.rerankMessagesWithLLM(ctx, llmModel, userMessage, contextMessages, chat.TopK)
 		if err == nil {
 			contextMessages = reranked
 		} else {
@@ -66,7 +67,7 @@ func (p *SimplePipeline) ProcessUserMessage(
 
 	// Step 6: Call chat completion
 	req := nexa.ChatCompletionRequest{
-		Model: chat.LLMModel,
+		Model: llmModel,
 		Messages: []nexa.ChatMessage{
 			{Role: "system", Content: chat.SystemPrompt},
 			{Role: "user", Content: prompt},
@@ -93,7 +94,7 @@ func (p *SimplePipeline) ProcessUserMessage(
 
 		// Use helper to collect stream
 		err := p.collectStreamedResponse(ctx, streamChan, errChan, responseChan, func(fullResponse string) error {
-			return p.storeCompletionPair(ctx, chat, userMessage, fullResponse)
+			return p.storeCompletionPair(ctx, chat, embedModel, userMessage, fullResponse)
 		})
 
 		if err != nil {
