@@ -22,14 +22,6 @@ A Go-based RAG (Retrieval-Augmented Generation) chat application with a Bubblete
 - **Chat Management**: Create, list, and delete chat conversations
 - **Persistent Storage**: All chats and messages stored locally in BadgerDB
 
-## Prerequisites
-
-1. **Nexa SDK**: Download and install NexaSDK https://github.com/NexaAI/nexa-sdk
-
-2. **Pull models**: Choose at least one embedding model and one LLM for your hardware from here https://sdk.nexa.ai/model or here https://huggingface.co/models and pull them using `nexa pull`
-
-3. **Nexa Server**: Ensure Nexa server is running `nexa serve`, default port is expected
-
 ## Installation
 
 ### Option 1: Download Pre-built Binary
