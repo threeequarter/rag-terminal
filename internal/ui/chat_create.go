@@ -301,9 +301,9 @@ func (m *ChatCreateModel) updateFocus() {
 }
 
 type ValidationFailed struct {
-	TemperatureError    string
-	TopKError           string
-	ContextWindowError  string
+	TemperatureError   string
+	TopKError          string
+	ContextWindowError string
 }
 
 func (m ChatCreateModel) createChat() tea.Cmd {
@@ -351,8 +351,8 @@ func (m ChatCreateModel) createChat() tea.Cmd {
 			cw, err := strconv.Atoi(contextWindowValue)
 			if err != nil {
 				contextWindowError = "Context Window must be an integer"
-			} else if cw < 1024 || cw > 32768 {
-				contextWindowError = "Context Window must be between 1024 and 32768"
+			} else if cw <= 0 {
+				contextWindowError = "Context Window must be between positive"
 			} else {
 				contextWindow = cw
 			}
@@ -382,8 +382,6 @@ func (m ChatCreateModel) createChat() tea.Cmd {
 			ID:            fmt.Sprintf("chat-%d", time.Now().Unix()),
 			Name:          name,
 			SystemPrompt:  systemPrompt,
-			LLMModel:      m.llmModel,
-			EmbedModel:    m.embedModel,
 			CreatedAt:     time.Now(),
 			Temperature:   temperature,
 			TopK:          topK,

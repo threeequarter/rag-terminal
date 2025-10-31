@@ -188,7 +188,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		m.currentChat = msg.Chat
 		m.state = stateChatView
-		m.chatViewModel = ui.NewChatViewModel(msg.Chat, m.pipeline, m.vectorStore, m.width, m.height)
+		m.chatViewModel = ui.NewChatViewModel(msg.Chat, m.pipeline, m.vectorStore, m.llmModel, m.embedModel, m.width, m.height)
 		return m, m.chatViewModel.Init()
 
 	case ui.ChatSelected:
@@ -201,7 +201,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Transition to chat view
 		m.currentChat = &msg.Chat
 		m.state = stateChatView
-		m.chatViewModel = ui.NewChatViewModel(&msg.Chat, m.pipeline, m.vectorStore, m.width, m.height)
+		m.chatViewModel = ui.NewChatViewModel(&msg.Chat, m.pipeline, m.vectorStore, m.llmModel, m.embedModel, m.width, m.height)
 		return m, m.chatViewModel.Init()
 
 	case ui.DeleteChat:
