@@ -39,27 +39,27 @@ const (
 )
 
 type ChatViewModel struct {
-	chat            *vector.Chat
-	pipeline        rag.Pipeline
-	documentManager *document.DocumentManager
-	vectorStore     vector.VectorStore
-	messages        []vector.Message
-	viewport        viewport.Model
-	textarea        textarea.Model
-	spinner         spinner.Model
-	fileSelector    FileSelectorOverlayModel
-	width           int
-	height          int
-	processingState ProcessingState
-	embeddedFiles   int
-	totalFiles      int
-	embeddedDocCount int // Number of embedded documents in current context
-	hasQuery        bool // Track if current operation has a query (needs LLM)
-	err             error
-	ctx             context.Context
-	cancelFunc      context.CancelFunc
-	streamChan      <-chan string
-	errChan         <-chan error
+	chat               *vector.Chat
+	pipeline           rag.Pipeline
+	documentManager    *document.DocumentManager
+	vectorStore        vector.VectorStore
+	messages           []vector.Message
+	viewport           viewport.Model
+	textarea           textarea.Model
+	spinner            spinner.Model
+	fileSelector       FileSelectorOverlayModel
+	width              int
+	height             int
+	processingState    ProcessingState
+	embeddedFiles      int
+	totalFiles         int
+	embeddedDocCount   int  // Number of embedded documents in current context
+	hasQuery           bool // Track if current operation has a query (needs LLM)
+	err                error
+	ctx                context.Context
+	cancelFunc         context.CancelFunc
+	streamChan         <-chan string
+	errChan            <-chan error
 	streamBuffer       *strings.Builder
 	lastRender         time.Time
 	tokenCount         int
@@ -75,7 +75,7 @@ type ChatMessageReceived struct {
 	Token           string
 	StreamChan      <-chan string
 	ErrChan         <-chan error
-	OriginalMessage string                        // Original user message with file paths
+	OriginalMessage string                         // Original user message with file paths
 	PathResults     []document.PathDetectionResult // Detected file paths to replace
 }
 
@@ -226,19 +226,19 @@ func NewChatViewModel(chat *vector.Chat, pipeline rag.Pipeline, vectorStore vect
 		pipeline:        pipeline,
 		documentManager: pipeline.GetDocumentManager(),
 		vectorStore:     vectorStore,
-		viewport:     vp,
-		textarea:     ta,
-		spinner:      sp,
-		fileSelector: fs,
-		width:        width,
-		height:       height,
-		ctx:          ctx,
-		cancelFunc:   cancel,
-		lastRender:   time.Now(),
-		mdRenderer:   mdRenderer,
-		streamBuffer: &strings.Builder{},
-		llmModel:     llmModel,
-		embedModel:   embedModel,
+		viewport:        vp,
+		textarea:        ta,
+		spinner:         sp,
+		fileSelector:    fs,
+		width:           width,
+		height:          height,
+		ctx:             ctx,
+		cancelFunc:      cancel,
+		lastRender:      time.Now(),
+		mdRenderer:      mdRenderer,
+		streamBuffer:    &strings.Builder{},
+		llmModel:        llmModel,
+		embedModel:      embedModel,
 	}
 }
 
@@ -451,7 +451,7 @@ func (m ChatViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.streamBuffer.Reset()
 
 		// Process the message (with filenames instead of paths) through the pipeline
-		streamChan, errChan, err := m.pipeline.ProcessUserMessage(m.ctx, m.chat, messageWithFilenames)
+		streamChan, errChan, err := m.pipeline.ProcessUserMessage(m.ctx, m.chat, m.llmModel, m.embedModel, messageWithFilenames)
 		if err != nil {
 			logging.Error("ProcessUserMessage failed after document loading: %v", err)
 			m.processingState = StateIdle
@@ -676,10 +676,10 @@ func replacePathsWithFilenames(originalMessage string, pathResults []document.Pa
 	// Sort paths by start position in reverse order to replace from end to beginning
 	// This ensures indices remain valid after replacements
 	type pathWithIndices struct {
-		path      string
-		filename  string
-		startIdx  int
-		endIdx    int
+		path     string
+		filename string
+		startIdx int
+		endIdx   int
 	}
 
 	var paths []pathWithIndices
