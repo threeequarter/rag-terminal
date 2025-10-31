@@ -25,23 +25,11 @@ type chatItem struct {
 
 func (i chatItem) Title() string { return i.chat.Name }
 func (i chatItem) Description() string {
-	reranking := "OFF"
-	if i.chat.UseReranking {
-		reranking = "ON"
-	}
-
 	fileInfo := ""
 	if i.chat.FileCount > 0 {
 		fileInfo = fmt.Sprintf(" | Files: %d", i.chat.FileCount)
 	}
-
-	return fmt.Sprintf("Created: %s | Temp: %.1f | TopK: %d | Ctx: %d | Reranking: %s%s",
-		i.chat.CreatedAt.Format("2006-01-02 15:04"),
-		i.chat.Temperature,
-		i.chat.TopK,
-		i.chat.ContextWindow,
-		reranking,
-		fileInfo)
+	return fmt.Sprintf("Created: %s | Model: %s%s", i.chat.CreatedAt.Format("2006-01-02 15:04"), i.chat.LLMModel, fileInfo)
 }
 func (i chatItem) FilterValue() string { return i.chat.Name }
 

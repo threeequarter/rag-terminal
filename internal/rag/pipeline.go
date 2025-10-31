@@ -9,7 +9,7 @@ import (
 
 // Pipeline defines the interface for processing user messages with optional context
 type Pipeline interface {
-	ProcessUserMessage(ctx context.Context, chat *vector.Chat, llmModel, embedModel string, userMessage string) (<-chan string, <-chan error, error)
+	ProcessUserMessage(ctx context.Context, chat *vector.Chat, userMessage string) (<-chan string, <-chan error, error)
 	GetDocumentManager() *document.DocumentManager
 }
 

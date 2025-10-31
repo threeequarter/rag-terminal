@@ -54,6 +54,8 @@ type Chat struct {
 	ID           string
 	Name         string
 	SystemPrompt string
+	LLMModel     string
+	EmbedModel   string
 	CreatedAt    time.Time
 
 	// RAG parameters

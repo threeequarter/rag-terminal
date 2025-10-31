@@ -55,18 +55,17 @@ func NewPipeline(nexaClient *nexa.Client, vectorStore vector.VectorStore) *baseP
 func (p *basePipeline) ProcessUserMessage(
 	ctx context.Context,
 	chat *vector.Chat,
-	llmModel, embedModel string,
 	userMessage string,
 ) (<-chan string, <-chan error, error) {
 	hasDocuments := chat.FileCount > 0
 
 	if !hasDocuments {
 		logging.Info("Using simple conversation mode (no documents loaded)")
-		return p.simplePipeline.ProcessUserMessage(ctx, chat, llmModel, embedModel, userMessage)
+		return p.simplePipeline.ProcessUserMessage(ctx, chat, userMessage)
 	}
 
 	logging.Info("Using RAG mode with document retrieval")
-	return p.ragPipeline.ProcessUserMessage(ctx, chat, llmModel, embedModel, userMessage)
+	return p.ragPipeline.ProcessUserMessage(ctx, chat, userMessage)
 }
 
 // GetDocumentManager returns the document manager for document loading operations
@@ -459,7 +458,7 @@ func (p *basePipeline) buildPromptWithContextAndDocumentsAndFileList(chat *vecto
 
 // chunkAndStoreQAPair chunks a Q&A pair text if it exceeds token limits and stores each chunk with embeddings
 // This prevents errors when Q&A pairs exceed the embedding model's max sequence length (1024 tokens)
-func (p *basePipeline) chunkAndStoreQAPair(ctx context.Context, chat *vector.Chat, embedModel string, qaText string) error {
+func (p *basePipeline) chunkAndStoreQAPair(ctx context.Context, chat *vector.Chat, qaText string) error {
 
 	const maxTokensPerChunk = 300
 
@@ -467,7 +466,7 @@ func (p *basePipeline) chunkAndStoreQAPair(ctx context.Context, chat *vector.Cha
 
 	// If small enough, store as single context message
 	if estimatedTokens <= maxTokensPerChunk {
-		qaEmbeddings, err := p.nexaClient.GenerateEmbeddings(ctx, embedModel, []string{qaText}, &p.config.EmbeddingDimensions)
+		qaEmbeddings, err := p.nexaClient.GenerateEmbeddings(ctx, chat.EmbedModel, []string{qaText}, &p.config.EmbeddingDimensions)
 		if err != nil {
 			return fmt.Errorf("failed to generate Q&A pair embedding: %w", err)
 		}
@@ -515,7 +514,7 @@ func (p *basePipeline) chunkAndStoreQAPair(ctx context.Context, chat *vector.Cha
 	}
 
 	// Generate embeddings for all chunks in batch
-	embeddings, err := p.nexaClient.GenerateEmbeddings(ctx, embedModel, chunkContents, &p.config.EmbeddingDimensions)
+	embeddings, err := p.nexaClient.GenerateEmbeddings(ctx, chat.EmbedModel, chunkContents, &p.config.EmbeddingDimensions)
 	if err != nil {
 		return fmt.Errorf("failed to generate embeddings for Q&A chunks: %w", err)
 	}
@@ -538,7 +537,6 @@ func (p *basePipeline) chunkAndStoreQAPair(ctx context.Context, chat *vector.Cha
 func (p *basePipeline) processDocument(
 	ctx context.Context,
 	chat *vector.Chat,
-	embedModel string,
 	doc vector.Document,
 	loader *document.Loader,
 	responseChan chan<- string,
@@ -583,7 +581,7 @@ func (p *basePipeline) processDocument(
 
 	// Generate embeddings for all chunks in batch
 	logging.Debug("Generating embeddings for %d chunks of %s with dimensions=%d", len(chunks), doc.FileName, p.config.EmbeddingDimensions)
-	embeddings, err := p.nexaClient.GenerateEmbeddings(ctx, embedModel, chunkContents, &p.config.EmbeddingDimensions)
+	embeddings, err := p.nexaClient.GenerateEmbeddings(ctx, chat.EmbedModel, chunkContents, &p.config.EmbeddingDimensions)
 	if err != nil {
 		logging.Error("Failed to generate embeddings for %s: %v", doc.FileName, err)
 		return fmt.Errorf("failed to generate embeddings for %s: %w", doc.FileName, err)
@@ -607,7 +605,6 @@ func (p *basePipeline) processDocument(
 func (p *basePipeline) storeCompletionPair(
 	ctx context.Context,
 	chat *vector.Chat,
-	embedModel string,
 	userQuery string,
 	assistantResponse string,
 ) error {
@@ -622,7 +619,7 @@ func (p *basePipeline) storeCompletionPair(
 	qaText := fmt.Sprintf("Previously user asked: %s\nYou answered: %s", userQuery, assistantResponse)
 
 	// Use chunking helper to handle long Q&A pairs
-	if err := p.chunkAndStoreQAPair(ctx, chat, embedModel, qaText); err != nil {
+	if err := p.chunkAndStoreQAPair(ctx, chat, qaText); err != nil {
 		logging.Error("Failed to chunk and store Q&A pair: %v", err)
 		return fmt.Errorf("failed to store Q&A pair: %w", err)
 	}

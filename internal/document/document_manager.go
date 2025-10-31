@@ -30,7 +30,7 @@ func NewDocumentManager(nexaClient *nexa.Client, vectorStore vector.VectorStore,
 }
 
 // LoadDocuments loads documents from a file or directory path
-func (dm *DocumentManager) LoadDocuments(ctx context.Context, chat *vector.Chat, embedModel string, path string) (<-chan string, <-chan error, error) {
+func (dm *DocumentManager) LoadDocuments(ctx context.Context, chat *vector.Chat, path string) (<-chan string, <-chan error, error) {
 	logging.Info("LoadDocuments called: path=%s, chatID=%s", path, chat.ID)
 
 	loader := NewLoader()
@@ -60,7 +60,7 @@ func (dm *DocumentManager) LoadDocuments(ctx context.Context, chat *vector.Chat,
 		defer close(errorChan)
 
 		for _, doc := range loadResult.Documents {
-			if err := dm.ProcessDocument(ctx, chat, embedModel, doc, loader, responseChan); err != nil {
+			if err := dm.ProcessDocument(ctx, chat, doc, loader, responseChan); err != nil {
 				errorChan <- err
 				return
 			}
@@ -71,7 +71,7 @@ func (dm *DocumentManager) LoadDocuments(ctx context.Context, chat *vector.Chat,
 }
 
 // LoadMultipleDocuments loads documents from multiple file or directory paths
-func (dm *DocumentManager) LoadMultipleDocuments(ctx context.Context, chat *vector.Chat, embedModel string, paths []PathDetectionResult) (<-chan string, <-chan error, error) {
+func (dm *DocumentManager) LoadMultipleDocuments(ctx context.Context, chat *vector.Chat, paths []PathDetectionResult) (<-chan string, <-chan error, error) {
 	logging.Info("LoadMultipleDocuments called: pathCount=%d, chatID=%s", len(paths), chat.ID)
 
 	if len(paths) == 0 {
@@ -130,7 +130,7 @@ func (dm *DocumentManager) LoadMultipleDocuments(ctx context.Context, chat *vect
 
 			// Process documents from this path using helper
 			for _, doc := range loadResult.Documents {
-				if err := dm.ProcessDocument(ctx, chat, embedModel, doc, loader, responseChan); err != nil {
+				if err := dm.ProcessDocument(ctx, chat, doc, loader, responseChan); err != nil {
 					errorChan <- err
 					return
 				}
@@ -158,7 +158,6 @@ func (dm *DocumentManager) LoadMultipleDocuments(ctx context.Context, chat *vect
 func (dm *DocumentManager) ProcessDocument(
 	ctx context.Context,
 	chat *vector.Chat,
-	embedModel string,
 	doc vector.Document,
 	loader *Loader,
 	responseChan chan<- string,
@@ -203,7 +202,7 @@ func (dm *DocumentManager) ProcessDocument(
 
 	// Generate embeddings for all chunks in batch
 	logging.Debug("Generating embeddings for %d chunks of %s with dimensions=%d", len(chunks), doc.FileName, dm.config.EmbeddingDimensions)
-	embeddings, err := dm.nexaClient.GenerateEmbeddings(ctx, embedModel, chunkContents, &dm.config.EmbeddingDimensions)
+	embeddings, err := dm.nexaClient.GenerateEmbeddings(ctx, chat.EmbedModel, chunkContents, &dm.config.EmbeddingDimensions)
 	if err != nil {
 		logging.Error("Failed to generate embeddings for %s: %v", doc.FileName, err)
 		return fmt.Errorf("failed to generate embeddings for %s: %w", doc.FileName, err)

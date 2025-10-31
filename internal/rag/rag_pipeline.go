@@ -21,11 +21,10 @@ type RAGPipeline struct {
 func (p *RAGPipeline) ProcessUserMessage(
 	ctx context.Context,
 	chat *vector.Chat,
-	llmModel, embedModel string,
 	userMessage string,
 ) (<-chan string, <-chan error, error) {
 	// Step 1: Generate embedding for user message (for retrieval purposes)
-	embeddings, err := p.nexaClient.GenerateEmbeddings(ctx, embedModel, []string{userMessage}, &p.config.EmbeddingDimensions)
+	embeddings, err := p.nexaClient.GenerateEmbeddings(ctx, chat.EmbedModel, []string{userMessage}, &p.config.EmbeddingDimensions)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to generate user message embedding: %w", err)
 	}
@@ -86,7 +85,7 @@ func (p *RAGPipeline) ProcessUserMessage(
 
 	// Step 4: Optional LLM-based reranking (only for messages for now)
 	if chat.UseReranking && len(contextMessages) > 0 {
-		reranked, err := p.rerankMessagesWithLLM(ctx, llmModel, userMessage, contextMessages, chat.TopK/2)
+		reranked, err := p.rerankMessagesWithLLM(ctx, chat.LLMModel, userMessage, contextMessages, chat.TopK/2)
 		if err == nil {
 			contextMessages = reranked
 		} else {
@@ -117,7 +116,7 @@ func (p *RAGPipeline) ProcessUserMessage(
 
 	// Step 6: Call chat completion
 	req := nexa.ChatCompletionRequest{
-		Model: llmModel,
+		Model: chat.LLMModel,
 		Messages: []nexa.ChatMessage{
 			{Role: "system", Content: chat.SystemPrompt},
 			{Role: "user", Content: prompt},
@@ -144,7 +143,7 @@ func (p *RAGPipeline) ProcessUserMessage(
 
 		// Use helper to collect stream and store completion pair
 		err := p.collectStreamedResponse(ctx, streamChan, errChan, responseChan, func(fullResponse string) error {
-			return p.storeCompletionPair(ctx, chat, embedModel, userMessage, fullResponse)
+			return p.storeCompletionPair(ctx, chat, userMessage, fullResponse)
 		})
 
 		if err != nil {

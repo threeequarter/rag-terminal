@@ -21,7 +21,7 @@ import (
 )
 
 const (
-	titleHeight     = 5
+	titleHeight     = 3
 	textareaHeight  = 5
 	helpHeight      = 2
 	padding         = 2
@@ -67,8 +67,6 @@ type ChatViewModel struct {
 	lastResponseTokens int
 	lastResponseTPS    float64
 	mdRenderer         *glamour.TermRenderer
-	llmModel           string
-	embedModel         string
 }
 
 type ChatMessageReceived struct {
@@ -168,7 +166,7 @@ func (m *ChatViewModel) safeRenderMarkdown(content string) string {
 	return strings.TrimRight(rendered, "\n")
 }
 
-func NewChatViewModel(chat *vector.Chat, pipeline rag.Pipeline, vectorStore vector.VectorStore, llmModel, embedModel string, width, height int) ChatViewModel {
+func NewChatViewModel(chat *vector.Chat, pipeline rag.Pipeline, vectorStore vector.VectorStore, width, height int) ChatViewModel {
 	ta := textarea.New()
 	ta.Placeholder = "Type your message, drop file or folder..."
 	ta.Focus()
@@ -237,8 +235,6 @@ func NewChatViewModel(chat *vector.Chat, pipeline rag.Pipeline, vectorStore vect
 		lastRender:   time.Now(),
 		mdRenderer:   mdRenderer,
 		streamBuffer: &strings.Builder{},
-		llmModel:     llmModel,
-		embedModel:   embedModel,
 	}
 }
 
@@ -538,54 +534,44 @@ func (m ChatViewModel) View() string {
 	title := TitleWithPaddingStyle.Render(m.chat.Name)
 	b.WriteString(title + "\n")
 
-	// Build status bar - 2 lines: models on line 1, properties on line 2
-	rerankingStatus := "OFF"
-	if m.chat.UseReranking {
-		rerankingStatus = "ON"
-	}
-
-	// Line 1: Models
-	modelLine := fmt.Sprintf("LLM: %s | Embedding: %s",
-		m.llmModel,
-		m.embedModel,
-	)
-	b.WriteString(statusBarStyle.Render(modelLine) + "\n")
-
-	// Line 2: Chat properties
-	var propertyLine string
-	propertyLine = fmt.Sprintf("Temp: %.1f | TopK: %d | Ctx: %d | Reranking: %s",
-		m.chat.Temperature,
-		m.chat.TopK,
-		m.chat.ContextWindow,
-		rerankingStatus,
-	)
-
-	// Add files count if documents are embedded
+	// Build status bar - show Files count in yellow if documents are embedded
+	var status string
 	if m.embeddedDocCount > 0 {
+		baseStatus := fmt.Sprintf("Model: %s | LLM reranking: %s | Temp: %.1f | ",
+			m.chat.LLMModel,
+			map[bool]string{true: "ON", false: "OFF"}[m.chat.UseReranking],
+			m.chat.Temperature,
+		)
 		filesInfo := FilesCountStyle.Render(fmt.Sprintf("Files: %d", m.embeddedDocCount))
-		propertyLine += " | " + filesInfo
+		status = baseStatus + filesInfo
+	} else {
+		status = fmt.Sprintf("Model: %s | LLM reranking: %s | Temp: %.1f | TopK: %d",
+			m.chat.LLMModel,
+			map[bool]string{true: "ON", false: "OFF"}[m.chat.UseReranking],
+			m.chat.Temperature,
+			m.chat.TopK,
+		)
 	}
 
-	// Add processing state indicators
 	switch m.processingState {
 	case StateEmbedding:
 		if m.totalFiles > 0 {
-			propertyLine += fmt.Sprintf(" | %s Embedding (%d/%d files)...", m.spinner.View(), m.embeddedFiles, m.totalFiles)
+			status += fmt.Sprintf(" | %s Embedding (%d/%d files)...", m.spinner.View(), m.embeddedFiles, m.totalFiles)
 		} else {
-			propertyLine += " | " + m.spinner.View() + " Embedding..."
+			status += " | " + m.spinner.View() + " Embedding..."
 		}
 	case StateReranking:
-		propertyLine += " | " + m.spinner.View() + " Reranking..."
+		status += " | " + m.spinner.View() + " Reranking..."
 	case StateThinking:
-		propertyLine += fmt.Sprintf(" | %s Thinking... (%d tokens)", m.spinner.View(), m.tokenCount)
+		status += fmt.Sprintf(" | %s Thinking... (%d tokens)", m.spinner.View(), m.tokenCount)
 	case StateIdle:
 		// Show last response statistics if available
 		if m.lastResponseTokens > 0 {
-			propertyLine += fmt.Sprintf(" | Last response: %d tokens, %.1f tok/s", m.lastResponseTokens, m.lastResponseTPS)
+			status += fmt.Sprintf(" | Last response: %d tokens, %.1f tok/s", m.lastResponseTokens, m.lastResponseTPS)
 		}
 	}
 
-	b.WriteString(statusBarStyle.Render(propertyLine) + "\n\n")
+	b.WriteString(statusBarStyle.Render(status) + "\n\n")
 
 	viewportWithBorder := RenderViewportWithBorder(m.viewport.View())
 	b.WriteString(viewportWithBorder)
@@ -639,7 +625,7 @@ func (m ChatViewModel) sendMessage(userMessage string) tea.Cmd {
 			logging.Info("Processing %d document path(s), query='%s'", len(multiPathResult.Paths), query)
 
 			// Load multiple documents through pipeline
-			streamChan, errChan, err := m.documentManager.LoadMultipleDocuments(m.ctx, m.chat, m.embedModel, multiPathResult.Paths)
+			streamChan, errChan, err := m.documentManager.LoadMultipleDocuments(m.ctx, m.chat, multiPathResult.Paths)
 			if err != nil {
 				logging.Error("LoadMultipleDocuments failed: %v", err)
 				return ChatResponseError{Err: err}
@@ -657,7 +643,7 @@ func (m ChatViewModel) sendMessage(userMessage string) tea.Cmd {
 
 		// No path detected, process as regular message with document support
 		logging.Debug("No path detected, processing as regular message")
-		streamChan, errChan, err := m.pipeline.ProcessUserMessage(m.ctx, m.chat, m.llmModel, m.embedModel, userMessage)
+		streamChan, errChan, err := m.pipeline.ProcessUserMessage(m.ctx, m.chat, userMessage)
 		if err != nil {
 			logging.Error("ProcessUserMessage failed: %v", err)
 			return ChatResponseError{Err: err}
