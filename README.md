@@ -60,16 +60,22 @@ Pre-built binaries are available for all major platforms. Download the latest re
 
 ## Usage
 
-1. **Start the application**:
+1. **Nexa SDK**: Download and install NexaSDK https://github.com/NexaAI/nexa-sdk
+
+2. **Pull models**: Choose at least one embedding model and one LLM for your hardware from here https://sdk.nexa.ai/model or here https://huggingface.co/models and pull them using `nexa pull`
+
+3. **Nexa Server**: Run Nexa server with `nexa serve`, default port is expected
+
+4. **Start the application**:
    ```bash
    .\rag-terminal.exe
    ```
 
-2. **Select Models**:
+5. **Select Models**:
    - Select an LLM model (used for both generation and reranking)
    - Select an embedding model (for vector search)
 
-3. **Create or Open Chat**:
+6. **Create or Open Chat**:
    - **Chat Name**: Name your conversation
    - **System Prompt**: Define AI behavior
    - **Temperature**: Response randomness (0-2, default: 0.7)
@@ -77,7 +83,7 @@ Pre-built binaries are available for all major platforms. Download the latest re
    - **Context Window**: Total context budget for single completion (query plus injected context plus model response)
    - **Use LLM Reranking**: Enabled by default - LLM scores retrieved messages for relevance
 
-4. **Load Documents** (Optional):
+7. **Load Documents** (Optional):
    - Drop file or folder to input field (or type one or more file paths):
      - Windows: `C:\path\to\file.txt` or `C:\folder`
      - Linux/macOS: `/home/user/file.txt` or `/usr/local/docs`
@@ -86,7 +92,7 @@ Pre-built binaries are available for all major platforms. Download the latest re
    - Documents are automatically chunked and embedded
    - All loaded documents become part of the chat context
 
-5. **Chat Workflow**:
+8. **Chat Workflow**:
    - Send message → generates embedding → searches similar messages and document chunks
    - If LLM reranking enabled: retrieves top-K × 2, LLM scores each, takes top-K
    - If reranking disabled: uses cosine similarity ranking
