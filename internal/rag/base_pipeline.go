@@ -725,6 +725,7 @@ func (p *basePipeline) storeCompletionPair(
 func (p *basePipeline) storeCompletionPairWithExtraction(
 	ctx context.Context,
 	chat *vector.Chat,
+	llmModel string,
 	embedModel string,
 	userQuery string,
 	assistantResponse string,
@@ -741,7 +742,7 @@ func (p *basePipeline) storeCompletionPairWithExtraction(
 		extractCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 
-		if err := p.profileExtractor.ExtractFacts(extractCtx, chat.ID, userQuery, assistantResponse); err != nil {
+		if err := p.profileExtractor.ExtractFacts(extractCtx, chat.ID, llmModel, userQuery, assistantResponse); err != nil {
 			logging.Debug("Profile extraction failed (non-blocking): %v", err)
 		}
 	}()

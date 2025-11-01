@@ -94,7 +94,7 @@ func (p *SimplePipeline) ProcessUserMessage(
 
 		// Use helper to collect stream and store completion pair with fact extraction
 		err := p.collectStreamedResponse(ctx, streamChan, errChan, responseChan, func(fullResponse string) error {
-			return p.storeCompletionPairWithExtraction(ctx, chat, embedModel, userMessage, fullResponse)
+			return p.storeCompletionPairWithExtraction(ctx, chat, llmModel, embedModel, userMessage, fullResponse)
 		})
 
 		if err != nil {
