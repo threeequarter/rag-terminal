@@ -48,6 +48,7 @@ type ChatViewModel struct {
 	textarea           textarea.Model
 	spinner            spinner.Model
 	fileSelector       FileSelectorOverlayModel
+	factsViewer        FactsViewerOverlayModel
 	width              int
 	height             int
 	processingState    ProcessingState
@@ -218,6 +219,10 @@ func NewChatViewModel(chat *vector.Chat, pipeline rag.Pipeline, vectorStore vect
 	// Initialize file selector with current dimensions
 	fs.UpdateSize(width, height)
 
+	fv := NewFactsViewerOverlayModel(vectorStore)
+	// Initialize facts viewer with current dimensions
+	fv.UpdateSize(width, height)
+
 	// Initialize markdown renderer with dark theme
 	mdRenderer := createMarkdownRenderer(width)
 
@@ -230,6 +235,7 @@ func NewChatViewModel(chat *vector.Chat, pipeline rag.Pipeline, vectorStore vect
 		textarea:        ta,
 		spinner:         sp,
 		fileSelector:    fs,
+		factsViewer:     fv,
 		width:           width,
 		height:          height,
 		ctx:             ctx,
@@ -268,11 +274,33 @@ func (m ChatViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.fileSelector.Hide()
 		m.textarea.Focus()
 		return m, nil
+
+	case FactDeleted:
+		// Delete the fact from storage
+		if err := m.factsViewer.DeleteSelectedFact(context.Background(), msg.Key); err != nil {
+			logging.Error("Failed to delete fact: %v", err)
+		}
+		return m, nil
+
+	case FactsViewerClosed:
+		// Hide facts viewer and refocus textarea
+		m.factsViewer.Hide()
+		m.textarea.Focus()
+		return m, nil
 	}
 
 	// Handle file selector updates if visible
 	if m.fileSelector.IsVisible() {
 		cmd := m.fileSelector.UpdateFileSelector(msg)
+		if cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+		return m, tea.Batch(cmds...)
+	}
+
+	// Handle facts viewer updates if visible
+	if m.factsViewer.IsVisible() {
+		cmd := m.factsViewer.UpdateFactsViewer(msg)
 		if cmd != nil {
 			cmds = append(cmds, cmd)
 		}
@@ -288,6 +316,7 @@ func (m ChatViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.viewport.Height = viewportHeight
 		m.textarea.SetWidth(msg.Width - 4)
 		m.fileSelector.UpdateSize(msg.Width, msg.Height)
+		m.factsViewer.UpdateSize(msg.Width, msg.Height)
 
 		// Update markdown renderer word wrap width
 		m.mdRenderer = createMarkdownRenderer(msg.Width)
@@ -307,6 +336,20 @@ func (m ChatViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				// Open if closed
 				return m, m.loadAndShowFileSelector()
+			}
+			return m, nil
+
+		case "ctrl+u":
+			// Toggle facts viewer
+			if m.processingState == StateIdle {
+				if m.factsViewer.IsVisible() {
+					// Close if already open
+					m.factsViewer.Hide()
+					m.textarea.Focus()
+					return m, nil
+				}
+				// Open if closed
+				return m, m.loadAndShowFactsViewer()
 			}
 			return m, nil
 
@@ -359,6 +402,12 @@ func (m ChatViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case DocumentsLoaded:
 		m.fileSelector.SetFiles(msg.Documents)
 		m.fileSelector.Show()
+		return m, nil
+
+	case FactsViewerLoaded:
+		// Set facts and show the viewer
+		m.factsViewer.SetFacts(m.chat.ID, msg.Profile)
+		m.factsViewer.Show()
 		return m, nil
 
 	case StateChange:
@@ -599,10 +648,15 @@ func (m ChatViewModel) View() string {
 
 	b.WriteString(m.textarea.View() + "\n")
 
-	helpText := "Enter: Send • Ctrl+F: Files • ↑/↓: Scroll • PgUp/PgDn: Page Scroll • Esc: Back • Ctrl+X: Exit"
+	helpText := "Enter: Send • Ctrl+F: Files • Ctrl+U: Facts • ↑/↓: Scroll • PgUp/PgDn: Page Scroll • Esc: Back • Ctrl+X: Exit"
 	b.WriteString(helpStyle.Render(helpText))
 
 	baseView := b.String()
+
+	// Render facts viewer overlay if visible (takes precedence)
+	if m.factsViewer.IsVisible() {
+		return m.factsViewer.RenderOverlay(baseView)
+	}
 
 	// Render file selector overlay on top if visible using the overlay library
 	return m.fileSelector.RenderOverlay(baseView)
@@ -863,6 +917,22 @@ func (m ChatViewModel) loadAndShowFileSelector() tea.Cmd {
 
 		return DocumentsLoaded{Documents: docs}
 	}
+}
+
+func (m ChatViewModel) loadAndShowFactsViewer() tea.Cmd {
+	return func() tea.Msg {
+		profile, err := m.vectorStore.GetUserProfile(context.Background(), m.chat.ID)
+		if err != nil {
+			logging.Error("Failed to load user profile for facts viewer: %v", err)
+			return FactsViewerClosed{}
+		}
+
+		return FactsViewerLoaded{Profile: profile}
+	}
+}
+
+type FactsViewerLoaded struct {
+	Profile *vector.UserProfile
 }
 
 type MessagesLoaded struct {

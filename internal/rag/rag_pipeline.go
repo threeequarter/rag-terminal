@@ -110,9 +110,9 @@ func (p *RAGPipeline) ProcessUserMessage(
 	// Step 5: Build prompt with context
 	var prompt string
 	if len(contextChunks) > 0 {
-		prompt = p.buildPromptWithContextAndDocumentsAndFileList(chat, contextMessages, contextChunks, allDocs, userMessage)
+		prompt = p.buildPromptWithContextAndDocumentsAndFileList(ctx, chat, contextMessages, contextChunks, allDocs, userMessage)
 	} else {
-		prompt = p.buildPromptWithContext(chat.SystemPrompt, contextMessages, userMessage)
+		prompt = p.buildPromptWithContext(ctx, chat.ID, chat.SystemPrompt, contextMessages, userMessage)
 	}
 
 	// Step 6: Call chat completion
@@ -142,9 +142,9 @@ func (p *RAGPipeline) ProcessUserMessage(
 		defer close(responseChan)
 		defer close(finalErrChan)
 
-		// Use helper to collect stream and store completion pair
+		// Use helper to collect stream and store completion pair with fact extraction
 		err := p.collectStreamedResponse(ctx, streamChan, errChan, responseChan, func(fullResponse string) error {
-			return p.storeCompletionPair(ctx, chat, embedModel, userMessage, fullResponse)
+			return p.storeCompletionPairWithExtraction(ctx, chat, llmModel, embedModel, userMessage, fullResponse)
 		})
 
 		if err != nil {
