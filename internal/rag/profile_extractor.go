@@ -44,10 +44,10 @@ func (e *ExtractionError) Error() string {
 
 // ValidatedFacts tracks extraction results with validation stats
 type ValidatedFacts struct {
-	Facts        []ExtractedFact
-	FailedCount  int // Number of facts that failed validation
-	Warnings     []string
-	ParsingMode  string // "clean_json", "markdown_code_block", "cleanup_required"
+	Facts       []ExtractedFact
+	FailedCount int // Number of facts that failed validation
+	Warnings    []string
+	ParsingMode string // "clean_json", "markdown_code_block", "cleanup_required"
 }
 
 // NewProfileExtractor creates a new fact extractor
@@ -183,7 +183,7 @@ func (pe *ProfileExtractor) callLLMWithRetry(ctx context.Context, model string, 
 			Messages: []nexa.ChatMessage{
 				{Role: "user", Content: prompt},
 			},
-			Temperature: 0.0, // Deterministic extraction
+			Temperature: 0.05, // Deterministic extraction
 			MaxTokens:   1000,
 		})
 

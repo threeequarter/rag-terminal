@@ -265,7 +265,7 @@ func (p *basePipeline) buildProfileContext(profile *vector.UserProfile) string {
 	}
 
 	var sb strings.Builder
-	sb.WriteString("You know the following about the user:\n")
+	sb.WriteString("---\nKnown information about the user:\n")
 
 	// Group facts by category (using key prefix before colon)
 	categories := map[string][]vector.ProfileFact{
@@ -346,7 +346,7 @@ func (p *basePipeline) buildPromptWithContext(ctx context.Context, chatID string
 	}
 
 	if len(relevantContext) > 0 {
-		builder.WriteString("You have access to the following previous conversation history for reference:\n\n")
+		builder.WriteString("---\nRelevant previous conversation history for reference:\n")
 		for _, msg := range relevantContext {
 			builder.WriteString(fmt.Sprintf("[%s]: %s\n\n", msg.Role, msg.Content))
 		}
@@ -365,7 +365,7 @@ func (p *basePipeline) buildPromptWithContextAndDocuments(systemPrompt string, c
 
 	// Add document chunks first (most specific context)
 	if len(contextChunks) > 0 {
-		builder.WriteString("You have access to the following relevant document excerpts:\n\n")
+		builder.WriteString("---\nRelevant document excerpts:\n")
 		for i, chunk := range contextChunks {
 			builder.WriteString(fmt.Sprintf("[Document %d: %s]\n%s\n\n", i+1, chunk.FilePath, chunk.Content))
 		}
@@ -382,7 +382,7 @@ func (p *basePipeline) buildPromptWithContextAndDocuments(systemPrompt string, c
 
 	// Add conversation context
 	if len(relevantContext) > 0 {
-		builder.WriteString("Previous conversation history:\n\n")
+		builder.WriteString("---\nPrevious conversation history:\n\n")
 		for _, msg := range relevantContext {
 			builder.WriteString(fmt.Sprintf("[%s]: %s\n\n", msg.Role, msg.Content))
 		}
@@ -710,7 +710,7 @@ func (p *basePipeline) storeCompletionPair(
 	}
 
 	// Now create and store the Q&A pair with embedding (for retrieval purposes)
-	qaText := fmt.Sprintf("Previously user asked: %s\nYou answered: %s", userQuery, assistantResponse)
+	qaText := fmt.Sprintf("Previously user asked: %s\nAssistant answered: %s", userQuery, assistantResponse)
 
 	// Use chunking helper to handle long Q&A pairs
 	if err := p.chunkAndStoreQAPair(ctx, chat, embedModel, qaText); err != nil {
@@ -738,6 +738,9 @@ func (p *basePipeline) storeCompletionPairWithExtraction(
 	// Start async fact extraction (non-blocking)
 	// This runs in the background and logs errors without failing the main pipeline
 	go func() {
+		// Wait 2 seconds before processing facts to avoid rate limiting on the API
+		time.Sleep(2 * time.Second)
+
 		// Use a short timeout for fact extraction to not block too long
 		extractCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
