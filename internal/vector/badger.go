@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -796,3 +797,307 @@ func (s *BadgerStore) buildIndex(ctx context.Context) error {
 
 	return nil
 }
+
+// Profile management methods
+
+// StoreUserProfile stores the entire user profile for a chat
+func (s *BadgerStore) StoreUserProfile(ctx context.Context, profile *UserProfile) error {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if s.currentDB == nil {
+		return fmt.Errorf("no chat is currently open")
+	}
+
+	profile.UpdatedAt = time.Now()
+	data, err := json.Marshal(profile)
+	if err != nil {
+		return fmt.Errorf("failed to marshal profile: %w", err)
+	}
+
+	key := fmt.Sprintf("profile:%s", profile.ChatID)
+	return s.currentDB.Update(func(txn *badger.Txn) error {
+		return txn.Set([]byte(key), data)
+	})
+}
+
+// GetUserProfile retrieves the user profile for a specific chat
+func (s *BadgerStore) GetUserProfile(ctx context.Context, chatID string) (*UserProfile, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if s.currentDB == nil {
+		return nil, fmt.Errorf("no chat is currently open")
+	}
+
+	var profile *UserProfile
+
+	err := s.currentDB.View(func(txn *badger.Txn) error {
+		key := fmt.Sprintf("profile:%s", chatID)
+		item, err := txn.Get([]byte(key))
+		if err != nil {
+			if err == badger.ErrKeyNotFound {
+				return nil // Profile doesn't exist yet
+			}
+			return err
+		}
+
+		err = item.Value(func(val []byte) error {
+			profile = &UserProfile{}
+			return json.Unmarshal(val, profile)
+		})
+		return err
+	})
+
+	if err != nil {
+		return nil, err
+	}
+
+	// Return empty profile if not found
+	if profile == nil {
+		profile = &UserProfile{
+			ChatID:    chatID,
+			Facts:     make(map[string]ProfileFact),
+			UpdatedAt: time.Now(),
+		}
+	}
+
+	return profile, nil
+}
+
+// UpsertProfileFact inserts or updates a single fact, and maintains history
+func (s *BadgerStore) UpsertProfileFact(ctx context.Context, chatID string, fact ProfileFact) error {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if s.currentDB == nil {
+		return fmt.Errorf("no chat is currently open")
+	}
+
+	now := time.Now()
+
+	return s.currentDB.Update(func(txn *badger.Txn) error {
+		// Get current profile
+		profileKey := fmt.Sprintf("profile:%s", chatID)
+		item, err := txn.Get([]byte(profileKey))
+
+		var profile *UserProfile
+		if err == nil {
+			// Profile exists
+			err = item.Value(func(val []byte) error {
+				profile = &UserProfile{}
+				return json.Unmarshal(val, profile)
+			})
+			if err != nil {
+				return err
+			}
+		} else if err == badger.ErrKeyNotFound {
+			// New profile
+			profile = &UserProfile{
+				ChatID:    chatID,
+				Facts:     make(map[string]ProfileFact),
+				UpdatedAt: now,
+			}
+		} else {
+			return err
+		}
+
+		// Store history of previous value if it exists
+		if oldFact, exists := profile.Facts[fact.Key]; exists {
+			historyKey := fmt.Sprintf("profile_history:%s:%d:%s", chatID, oldFact.LastSeen.UnixNano(), fact.Key)
+			historyData, err := json.Marshal(oldFact)
+			if err != nil {
+				return err
+			}
+			if err := txn.Set([]byte(historyKey), historyData); err != nil {
+				return err
+			}
+		}
+
+		// Set FirstSeen if this is a new fact
+		if _, exists := profile.Facts[fact.Key]; !exists {
+			fact.FirstSeen = now
+		} else {
+			// Preserve FirstSeen for updates
+			fact.FirstSeen = profile.Facts[fact.Key].FirstSeen
+		}
+		fact.LastSeen = now
+
+		// Update profile
+		profile.Facts[fact.Key] = fact
+		profile.UpdatedAt = now
+
+		// Store updated profile
+		profileData, err := json.Marshal(profile)
+		if err != nil {
+			return err
+		}
+		if err := txn.Set([]byte(profileKey), profileData); err != nil {
+			return err
+		}
+
+		// Store individual fact for atomic access
+		factKey := fmt.Sprintf("profile_fact:%s:%s", chatID, fact.Key)
+		factData, err := json.Marshal(fact)
+		if err != nil {
+			return err
+		}
+		return txn.Set([]byte(factKey), factData)
+	})
+}
+
+// GetProfileFact retrieves a single fact from the user's profile
+func (s *BadgerStore) GetProfileFact(ctx context.Context, chatID string, key string) (*ProfileFact, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if s.currentDB == nil {
+		return nil, fmt.Errorf("no chat is currently open")
+	}
+
+	var fact *ProfileFact
+
+	err := s.currentDB.View(func(txn *badger.Txn) error {
+		factKey := fmt.Sprintf("profile_fact:%s:%s", chatID, key)
+		item, err := txn.Get([]byte(factKey))
+		if err != nil {
+			if err == badger.ErrKeyNotFound {
+				return nil // Fact doesn't exist
+			}
+			return err
+		}
+
+		err = item.Value(func(val []byte) error {
+			fact = &ProfileFact{}
+			return json.Unmarshal(val, fact)
+		})
+		return err
+	})
+
+	return fact, err
+}
+
+// DeleteProfileFact removes a fact from the user's profile
+func (s *BadgerStore) DeleteProfileFact(ctx context.Context, chatID string, key string) error {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if s.currentDB == nil {
+		return fmt.Errorf("no chat is currently open")
+	}
+
+	return s.currentDB.Update(func(txn *badger.Txn) error {
+		// Get current profile
+		profileKey := fmt.Sprintf("profile:%s", chatID)
+		item, err := txn.Get([]byte(profileKey))
+		if err != nil {
+			if err == badger.ErrKeyNotFound {
+				return nil // Profile doesn't exist
+			}
+			return err
+		}
+
+		// Parse profile
+		var profile UserProfile
+		err = item.Value(func(val []byte) error {
+			return json.Unmarshal(val, &profile)
+		})
+		if err != nil {
+			return err
+		}
+
+		// Remove fact if it exists
+		if fact, exists := profile.Facts[key]; exists {
+			// Store in history before deletion
+			historyKey := fmt.Sprintf("profile_history:%s:%d:%s", chatID, fact.LastSeen.UnixNano(), key)
+			historyData, err := json.Marshal(fact)
+			if err != nil {
+				return err
+			}
+			if err := txn.Set([]byte(historyKey), historyData); err != nil {
+				return err
+			}
+
+			delete(profile.Facts, key)
+			profile.UpdatedAt = time.Now()
+
+			// Update profile
+			profileData, err := json.Marshal(&profile)
+			if err != nil {
+				return err
+			}
+			if err := txn.Set([]byte(profileKey), profileData); err != nil {
+				return err
+			}
+		}
+
+		// Delete individual fact
+		factKey := fmt.Sprintf("profile_fact:%s:%s", chatID, key)
+		return txn.Delete([]byte(factKey))
+	})
+}
+
+// GetFactHistory retrieves the history of changes for a specific fact
+func (s *BadgerStore) GetFactHistory(ctx context.Context, chatID string, key string) ([]ProfileFact, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if s.currentDB == nil {
+		return nil, fmt.Errorf("no chat is currently open")
+	}
+
+	var history []ProfileFact
+	prefix := []byte(fmt.Sprintf("profile_history:%s::", chatID))
+
+	err := s.currentDB.View(func(txn *badger.Txn) error {
+		opts := badger.DefaultIteratorOptions
+		opts.Prefix = prefix
+		it := txn.NewIterator(opts)
+		defer it.Close()
+
+		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
+			item := it.Item()
+			// Extract key from the full history key: profile_history:{chatID}:{timestamp}:{key}
+			fullKey := string(item.Key())
+			// Parse the fact key from the history entry
+			parts := splitHistoryKey(fullKey)
+			if len(parts) > 0 && parts[len(parts)-1] == key {
+				err := item.Value(func(val []byte) error {
+					var fact ProfileFact
+					if err := json.Unmarshal(val, &fact); err != nil {
+						return err
+					}
+					history = append(history, fact)
+					return nil
+				})
+				if err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	})
+
+	if err != nil {
+		return nil, err
+	}
+
+	// Sort by LastSeen descending (most recent first)
+	sort.Slice(history, func(i, j int) bool {
+		return history[i].LastSeen.After(history[j].LastSeen)
+	})
+
+	return history, nil
+}
+
+// Helper function to split history key
+func splitHistoryKey(fullKey string) []string {
+	// Format: profile_history:{chatID}:{timestamp}:{key}
+	parts := strings.Split(fullKey, ":")
+	if len(parts) >= 4 {
+		// Return just the last part (the key)
+		return []string{parts[len(parts)-1]}
+	}
+	return nil
+}
+

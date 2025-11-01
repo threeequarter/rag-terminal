@@ -37,6 +37,18 @@ type VectorStore interface {
 	// GetDocuments retrieves all documents for the currently open chat
 	GetDocuments(ctx context.Context) ([]Document, error)
 
+	// Profile management
+	StoreUserProfile(ctx context.Context, profile *UserProfile) error
+	GetUserProfile(ctx context.Context, chatID string) (*UserProfile, error)
+
+	// Individual fact operations
+	UpsertProfileFact(ctx context.Context, chatID string, fact ProfileFact) error
+	GetProfileFact(ctx context.Context, chatID string, key string) (*ProfileFact, error)
+	DeleteProfileFact(ctx context.Context, chatID string, key string) error
+
+	// History and conflict resolution
+	GetFactHistory(ctx context.Context, chatID string, key string) ([]ProfileFact, error)
+
 	// Close closes any open database connection and cleans up resources
 	Close() error
 }
@@ -91,4 +103,34 @@ type DocumentChunk struct {
 	StartPos   int       `json:"start_pos"`
 	EndPos     int       `json:"end_pos"`
 	FilePath   string    `json:"file_path"` // Denormalized for easy retrieval
+}
+
+// FactCategory defines hierarchical fact organization
+type FactCategory string
+
+const (
+	FactCategoryIdentity     FactCategory = "identity"     // name, age, location
+	FactCategoryProfessional FactCategory = "professional" // role, company, experience
+	FactCategoryPreference   FactCategory = "preference"   // language, tools, style
+	FactCategoryProject      FactCategory = "project"      // current work, goals
+	FactCategoryTask         FactCategory = "task"         // what interests user in current task: functions, variables, processes, clients
+	FactCategoryPersonal     FactCategory = "personal"     // hobbies, interests (careful!)
+)
+
+// ProfileFact represents a single piece of information about the user
+type ProfileFact struct {
+	Key        string    `json:"key"`        // e.g., "name", "role", "company", "preference:language"
+	Value      string    `json:"value"`      // e.g., "John", "Solution Architect", "Java"
+	Confidence float64   `json:"confidence"` // 0.0-1.0, how certain we are
+	Source     string    `json:"source"`     // "explicit" (user stated) or "inferred" (LLM extracted)
+	FirstSeen  time.Time `json:"first_seen"` // When first extracted
+	LastSeen   time.Time `json:"last_seen"`  // Most recent confirmation
+	Context    string    `json:"context"`    // Original conversation snippet
+}
+
+// UserProfile represents persistent facts about the user in a specific chat
+type UserProfile struct {
+	ChatID    string                 `json:"chat_id"`
+	Facts     map[string]ProfileFact `json:"facts"`
+	UpdatedAt time.Time              `json:"updated_at"`
 }

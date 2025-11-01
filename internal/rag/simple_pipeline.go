@@ -62,8 +62,8 @@ func (p *SimplePipeline) ProcessUserMessage(
 		}
 	}
 
-	// Step 5: Build simple prompt with conversation context only
-	prompt := p.buildPromptWithContext(chat.SystemPrompt, contextMessages, userMessage)
+	// Step 5: Build simple prompt with conversation context and user profile
+	prompt := p.buildPromptWithContext(ctx, chat.ID, chat.SystemPrompt, contextMessages, userMessage)
 
 	// Step 6: Call chat completion
 	req := nexa.ChatCompletionRequest{
@@ -92,9 +92,9 @@ func (p *SimplePipeline) ProcessUserMessage(
 		defer close(responseChan)
 		defer close(finalErrChan)
 
-		// Use helper to collect stream
+		// Use helper to collect stream and store completion pair with fact extraction
 		err := p.collectStreamedResponse(ctx, streamChan, errChan, responseChan, func(fullResponse string) error {
-			return p.storeCompletionPair(ctx, chat, embedModel, userMessage, fullResponse)
+			return p.storeCompletionPairWithExtraction(ctx, chat, embedModel, userMessage, fullResponse)
 		})
 
 		if err != nil {

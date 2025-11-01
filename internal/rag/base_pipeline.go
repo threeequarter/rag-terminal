@@ -19,12 +19,13 @@ import (
 
 // basePipeline provides shared helpers and delegates to appropriate pipeline implementation
 type basePipeline struct {
-	nexaClient      *nexa.Client
-	vectorStore     vector.VectorStore
-	config          *config.Config
-	documentManager *document.DocumentManager
-	simplePipeline  *SimplePipeline
-	ragPipeline     *RAGPipeline
+	nexaClient       *nexa.Client
+	vectorStore      vector.VectorStore
+	config           *config.Config
+	documentManager  *document.DocumentManager
+	profileExtractor *ProfileExtractor
+	simplePipeline   *SimplePipeline
+	ragPipeline      *RAGPipeline
 }
 
 // NewPipeline creates a new pipeline that delegates between simple and RAG modes
@@ -37,10 +38,11 @@ func NewPipeline(nexaClient *nexa.Client, vectorStore vector.VectorStore) *baseP
 	}
 
 	base := &basePipeline{
-		nexaClient:      nexaClient,
-		vectorStore:     vectorStore,
-		config:          cfg,
-		documentManager: document.NewDocumentManager(nexaClient, vectorStore, cfg),
+		nexaClient:       nexaClient,
+		vectorStore:      vectorStore,
+		config:           cfg,
+		documentManager:  document.NewDocumentManager(nexaClient, vectorStore, cfg),
+		profileExtractor: NewProfileExtractor(nexaClient, vectorStore),
 	}
 
 	// Initialize both pipeline implementations with shared base
@@ -256,8 +258,84 @@ func (p *basePipeline) rerankMessagesWithLLM(ctx context.Context, llmModel, quer
 	return result, nil
 }
 
-func (p *basePipeline) buildPromptWithContext(systemPrompt string, contextMessages []vector.Message, userMessage string) string {
+// buildProfileContext formats user facts from the profile for inclusion in prompts
+func (p *basePipeline) buildProfileContext(profile *vector.UserProfile) string {
+	if len(profile.Facts) == 0 {
+		return ""
+	}
+
+	var sb strings.Builder
+	sb.WriteString("You know the following about the user:\n")
+
+	// Group facts by category (using key prefix before colon)
+	categories := map[string][]vector.ProfileFact{
+		"identity":     {},
+		"professional": {},
+		"preference":   {},
+		"project":      {},
+		"personal":     {},
+	}
+
+	for _, fact := range profile.Facts {
+		// Only include high-confidence facts (>0.6)
+		if fact.Confidence < 0.6 {
+			continue
+		}
+
+		// Extract category from key (before colon if present)
+		category := "personal" // default
+		keyParts := strings.Split(fact.Key, ":")
+		if len(keyParts) > 0 && keyParts[0] != "" {
+			potentialCategory := keyParts[0]
+			if _, exists := categories[potentialCategory]; exists {
+				category = potentialCategory
+			}
+		}
+
+		categories[category] = append(categories[category], fact)
+	}
+
+	// Format by category in a consistent order
+	categoryOrder := []string{"identity", "professional", "preference", "project", "personal"}
+	for _, category := range categoryOrder {
+		facts := categories[category]
+		if len(facts) == 0 {
+			continue
+		}
+
+		// Capitalize category name for display
+		displayCategory := strings.ToUpper(string([]rune(category)[0])) + category[1:]
+		sb.WriteString(fmt.Sprintf("\n%s:\n", displayCategory))
+
+		for _, fact := range facts {
+			// Remove category prefix from key for display
+			displayKey := strings.TrimPrefix(fact.Key, category+":")
+			if displayKey == "" {
+				displayKey = category
+			}
+
+			sb.WriteString(fmt.Sprintf("- %s: %s\n", displayKey, fact.Value))
+		}
+	}
+
+	return sb.String()
+}
+
+func (p *basePipeline) buildPromptWithContext(ctx context.Context, chatID string, systemPrompt string, contextMessages []vector.Message, userMessage string) string {
 	var builder strings.Builder
+
+	// Add user profile context if available
+	profile, err := p.vectorStore.GetUserProfile(ctx, chatID)
+	if err != nil {
+		logging.Debug("Failed to retrieve user profile: %v", err)
+	} else if profile != nil && len(profile.Facts) > 0 {
+		profileContext := p.buildProfileContext(profile)
+		if profileContext != "" {
+			builder.WriteString("# User Profile\n")
+			builder.WriteString(profileContext)
+			builder.WriteString("\n\n")
+		}
+	}
 
 	// Filter out messages with identical content to current message (to avoid treating first message as context)
 	var relevantContext []vector.Message
@@ -322,7 +400,7 @@ func (p *basePipeline) buildPromptWithContextAndDocuments(systemPrompt string, c
 	return builder.String()
 }
 
-func (p *basePipeline) buildPromptWithContextAndDocumentsAndFileList(chat *vector.Chat, contextMessages []vector.Message, contextChunks []vector.DocumentChunk, allDocs []vector.Document, userMessage string) string {
+func (p *basePipeline) buildPromptWithContextAndDocumentsAndFileList(ctx context.Context, chat *vector.Chat, contextMessages []vector.Message, contextChunks []vector.DocumentChunk, allDocs []vector.Document, userMessage string) string {
 	var builder strings.Builder
 
 	// Calculate token budgets
@@ -348,6 +426,19 @@ func (p *basePipeline) buildPromptWithContextAndDocumentsAndFileList(chat *vecto
 
 	// Use appropriate budget configuration
 	budget := CalculateTokenBudgetForType(contextWindow, maxTokens, p.config, isCodeFile)
+
+	// Add user profile context if available
+	profile, err := p.vectorStore.GetUserProfile(ctx, chat.ID)
+	if err != nil {
+		logging.Debug("Failed to retrieve user profile: %v", err)
+	} else if profile != nil && len(profile.Facts) > 0 {
+		profileContext := p.buildProfileContext(profile)
+		if profileContext != "" {
+			builder.WriteString("# User Profile\n")
+			builder.WriteString(profileContext)
+			builder.WriteString("\n\n")
+		}
+	}
 	if isCodeFile {
 		logging.Info("Using code-optimized token budget (input: %d, excerpts: %d, history: %d, chunks: %d)",
 			budget.AvailableInput, budget.ExcerptsBudget, budget.HistoryBudget, budget.ChunksBudget)
@@ -626,6 +717,34 @@ func (p *basePipeline) storeCompletionPair(
 		logging.Error("Failed to chunk and store Q&A pair: %v", err)
 		return fmt.Errorf("failed to store Q&A pair: %w", err)
 	}
+
+	return nil
+}
+
+// storeCompletionPairWithExtraction stores the completion pair and asynchronously extracts user facts
+func (p *basePipeline) storeCompletionPairWithExtraction(
+	ctx context.Context,
+	chat *vector.Chat,
+	embedModel string,
+	userQuery string,
+	assistantResponse string,
+) error {
+	// First store the completion pair
+	if err := p.storeCompletionPair(ctx, chat, embedModel, userQuery, assistantResponse); err != nil {
+		return err
+	}
+
+	// Start async fact extraction (non-blocking)
+	// This runs in the background and logs errors without failing the main pipeline
+	go func() {
+		// Use a short timeout for fact extraction to not block too long
+		extractCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		if err := p.profileExtractor.ExtractFacts(extractCtx, chat.ID, userQuery, assistantResponse); err != nil {
+			logging.Debug("Profile extraction failed (non-blocking): %v", err)
+		}
+	}()
 
 	return nil
 }
