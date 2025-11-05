@@ -5,22 +5,14 @@ import (
 	"time"
 )
 
-type VectorStore interface {
+// ChatStore manages chat metadata and lifecycle
+type ChatStore interface {
 	// OpenChat opens the database for a specific chat
 	// Must be called before any chat-specific operations
 	OpenChat(ctx context.Context, chatID string) error
 
 	// CloseChat gracefully closes the current chat's database
 	CloseChat(ctx context.Context) error
-
-	// StoreMessage stores a message with its embedding in the currently open chat
-	StoreMessage(ctx context.Context, messageID, role, content string, embedding []float32, timestamp time.Time) error
-
-	// SearchSimilar searches for similar messages by vector similarity in the currently open chat
-	SearchSimilar(ctx context.Context, queryEmbedding []float32, topK int) ([]Message, error)
-
-	// GetMessages retrieves all messages for the currently open chat in chronological order
-	GetMessages(ctx context.Context) ([]Message, error)
 
 	// StoreChat stores chat metadata (creates new chat database)
 	StoreChat(ctx context.Context, chat *Chat) error
@@ -33,21 +25,54 @@ type VectorStore interface {
 
 	// DeleteChat deletes a chat directory and all its data
 	DeleteChat(ctx context.Context, chatID string) error
+}
 
+// MessageStore manages messages and message embeddings
+type MessageStore interface {
+	// StoreMessage stores a message with its embedding in the currently open chat
+	StoreMessage(ctx context.Context, messageID, role, content string, embedding []float32, timestamp time.Time) error
+
+	// SearchSimilar searches for similar messages by vector similarity in the currently open chat
+	SearchSimilar(ctx context.Context, queryEmbedding []float32, topK int) ([]Message, error)
+
+	// GetMessages retrieves all messages for the currently open chat in chronological order
+	GetMessages(ctx context.Context) ([]Message, error)
+}
+
+// DocumentStore manages documents and document chunks
+type DocumentStore interface {
 	// GetDocuments retrieves all documents for the currently open chat
 	GetDocuments(ctx context.Context) ([]Document, error)
+}
 
-	// Profile management
+// ProfileStore manages user profile information and facts
+type ProfileStore interface {
+	// StoreUserProfile stores the entire user profile for a chat
 	StoreUserProfile(ctx context.Context, profile *UserProfile) error
+
+	// GetUserProfile retrieves the user profile for a specific chat
 	GetUserProfile(ctx context.Context, chatID string) (*UserProfile, error)
 
-	// Individual fact operations
+	// UpsertProfileFact inserts or updates a single fact, maintaining history
 	UpsertProfileFact(ctx context.Context, chatID string, fact ProfileFact) error
+
+	// GetProfileFact retrieves a single fact from the user's profile
 	GetProfileFact(ctx context.Context, chatID string, key string) (*ProfileFact, error)
+
+	// DeleteProfileFact removes a fact from the user's profile
 	DeleteProfileFact(ctx context.Context, chatID string, key string) error
 
-	// History and conflict resolution
+	// GetFactHistory retrieves the history of changes for a specific fact
 	GetFactHistory(ctx context.Context, chatID string, key string) ([]ProfileFact, error)
+}
+
+// VectorStore is a composite interface providing complete vector storage functionality.
+// It combines chat management, message storage, document management, and user profiles.
+type VectorStore interface {
+	ChatStore
+	MessageStore
+	DocumentStore
+	ProfileStore
 
 	// Close closes any open database connection and cleans up resources
 	Close() error

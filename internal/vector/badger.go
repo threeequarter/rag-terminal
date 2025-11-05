@@ -15,11 +15,11 @@ import (
 )
 
 type BadgerStore struct {
-	baseDir      string
+	baseDir       string
 	currentChatID string
-	currentDB    *badger.DB
-	hnswIndex    *HNSWIndex
-	mu           sync.RWMutex
+	currentDB     *badger.DB
+	hnswIndex     *HNSWIndex
+	mu            sync.RWMutex
 }
 
 func NewBadgerStore(baseDir string) (*BadgerStore, error) {
@@ -90,8 +90,8 @@ func (s *BadgerStore) CloseChat(ctx context.Context) error {
 }
 
 func (s *BadgerStore) StoreMessage(ctx context.Context, messageID, role, content string, embedding []float32, timestamp time.Time) error {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	if s.currentDB == nil {
 		return fmt.Errorf("no chat is currently open")
@@ -181,34 +181,18 @@ func (s *BadgerStore) GetMessages(ctx context.Context) ([]Message, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	if s.currentDB == nil {
-		return nil, fmt.Errorf("no chat is currently open")
-	}
-
 	var messages []Message
 	prefix := []byte("msg:")
 
-	err := s.currentDB.View(func(txn *badger.Txn) error {
-		opts := badger.DefaultIteratorOptions
-		opts.Prefix = prefix
-		it := txn.NewIterator(opts)
-		defer it.Close()
-
-		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
-			item := it.Item()
-			err := item.Value(func(val []byte) error {
-				var msg Message
-				if err := json.Unmarshal(val, &msg); err != nil {
-					return err
-				}
-				messages = append(messages, msg)
-				return nil
-			})
-			if err != nil {
+	err := s.iterateWithPrefix(prefix, func(item *badger.Item) error {
+		return item.Value(func(val []byte) error {
+			var msg Message
+			if err := json.Unmarshal(val, &msg); err != nil {
 				return err
 			}
-		}
-		return nil
+			messages = append(messages, msg)
+			return nil
+		})
 	})
 
 	if err != nil {
@@ -223,17 +207,17 @@ func (s *BadgerStore) GetMessages(ctx context.Context) ([]Message, error) {
 	return messages, nil
 }
 
-func (s *BadgerStore) StoreChat(ctx context.Context, chat *Chat) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	// Create chat directory
+// upsertChatMetadata is a helper that writes chat metadata to disk
+// createDir controls whether to create the chat directory (true for new chats)
+func (s *BadgerStore) upsertChatMetadata(ctx context.Context, chat *Chat, createDir bool) error {
 	chatDir := filepath.Join(s.baseDir, chat.ID)
-	if err := os.MkdirAll(chatDir, 0755); err != nil {
-		return fmt.Errorf("failed to create chat directory: %w", err)
+
+	if createDir {
+		if err := os.MkdirAll(chatDir, 0755); err != nil {
+			return fmt.Errorf("failed to create chat directory: %w", err)
+		}
 	}
 
-	// Store chat metadata as JSON file
 	metadataPath := filepath.Join(chatDir, "metadata.json")
 	data, err := json.Marshal(chat)
 	if err != nil {
@@ -247,22 +231,41 @@ func (s *BadgerStore) StoreChat(ctx context.Context, chat *Chat) error {
 	return nil
 }
 
+func (s *BadgerStore) StoreChat(ctx context.Context, chat *Chat) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.upsertChatMetadata(ctx, chat, true)
+}
+
 func (s *BadgerStore) UpdateChat(ctx context.Context, chat *Chat) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Update chat metadata as JSON file
-	metadataPath := filepath.Join(s.baseDir, chat.ID, "metadata.json")
-	data, err := json.Marshal(chat)
-	if err != nil {
-		return fmt.Errorf("failed to marshal chat metadata: %w", err)
+	return s.upsertChatMetadata(ctx, chat, false)
+}
+
+// iterateWithPrefix is a generic helper that iterates through items with a given prefix
+// and calls processor for each item. The processor is responsible for unmarshalling
+// and handling the item value. This reduces code duplication across retrieval methods.
+func (s *BadgerStore) iterateWithPrefix(prefix []byte, processor func(*badger.Item) error) error {
+	if s.currentDB == nil {
+		return fmt.Errorf("no chat is currently open")
 	}
 
-	if err := os.WriteFile(metadataPath, data, 0644); err != nil {
-		return fmt.Errorf("failed to write chat metadata: %w", err)
-	}
+	return s.currentDB.View(func(txn *badger.Txn) error {
+		opts := badger.DefaultIteratorOptions
+		opts.Prefix = prefix
+		it := txn.NewIterator(opts)
+		defer it.Close()
 
-	return nil
+		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
+			if err := processor(it.Item()); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 func (s *BadgerStore) GetChat(ctx context.Context, chatID string) (*Chat, error) {
@@ -352,44 +355,6 @@ func (s *BadgerStore) DeleteChat(ctx context.Context, chatID string) error {
 	return nil
 }
 
-// StoreMessageToChat stores a message to a specific chat without changing the current context
-// This is useful for background operations that shouldn't interfere with the active chat
-func (s *BadgerStore) StoreMessageToChat(ctx context.Context, chatID, messageID, role, content string, embedding []float32, timestamp time.Time) error {
-	// Open a separate database connection for this specific chat
-	chatDBPath := filepath.Join(s.baseDir, chatID, "messages.db")
-	if err := os.MkdirAll(filepath.Dir(chatDBPath), 0755); err != nil {
-		return fmt.Errorf("failed to create chat directory: %w", err)
-	}
-
-	opts := badger.DefaultOptions(chatDBPath)
-	opts.Logger = nil // Disable logging
-
-	db, err := badger.Open(opts)
-	if err != nil {
-		return fmt.Errorf("failed to open chat database: %w", err)
-	}
-	defer db.Close()
-
-	msg := Message{
-		ID:        messageID,
-		ChatID:    chatID,
-		Role:      role,
-		Content:   content,
-		Embedding: embedding,
-		Timestamp: timestamp,
-	}
-
-	data, err := json.Marshal(msg)
-	if err != nil {
-		return fmt.Errorf("failed to marshal message: %w", err)
-	}
-
-	key := fmt.Sprintf("msg:%s", messageID)
-	return db.Update(func(txn *badger.Txn) error {
-		return txn.Set([]byte(key), data)
-	})
-}
-
 func (s *BadgerStore) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -410,8 +375,8 @@ func (s *BadgerStore) Close() error {
 
 // StoreDocument stores a document metadata in the chat context
 func (s *BadgerStore) StoreDocument(ctx context.Context, doc *Document) error {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	if s.currentDB == nil {
 		return fmt.Errorf("no chat is currently open")
@@ -433,34 +398,18 @@ func (s *BadgerStore) GetAllMessages(ctx context.Context) ([]Message, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	if s.currentDB == nil {
-		return nil, fmt.Errorf("no chat is currently open")
-	}
-
 	var messages []Message
 	prefix := []byte("msg:")
 
-	err := s.currentDB.View(func(txn *badger.Txn) error {
-		opts := badger.DefaultIteratorOptions
-		opts.Prefix = prefix
-		it := txn.NewIterator(opts)
-		defer it.Close()
-
-		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
-			item := it.Item()
-			err := item.Value(func(val []byte) error {
-				var msg Message
-				if err := json.Unmarshal(val, &msg); err != nil {
-					return err
-				}
-				messages = append(messages, msg)
-				return nil
-			})
-			if err != nil {
+	err := s.iterateWithPrefix(prefix, func(item *badger.Item) error {
+		return item.Value(func(val []byte) error {
+			var msg Message
+			if err := json.Unmarshal(val, &msg); err != nil {
 				return err
 			}
-		}
-		return nil
+			messages = append(messages, msg)
+			return nil
+		})
 	})
 
 	if err != nil {
@@ -472,8 +421,8 @@ func (s *BadgerStore) GetAllMessages(ctx context.Context) ([]Message, error) {
 
 // StoreDocumentChunk stores a document chunk with its embedding
 func (s *BadgerStore) StoreDocumentChunk(ctx context.Context, chunk *DocumentChunk) error {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	if s.currentDB == nil {
 		return fmt.Errorf("no chat is currently open")
@@ -506,34 +455,18 @@ func (s *BadgerStore) GetDocuments(ctx context.Context) ([]Document, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	if s.currentDB == nil {
-		return nil, fmt.Errorf("no chat is currently open")
-	}
-
 	var documents []Document
 	prefix := []byte("doc:")
 
-	err := s.currentDB.View(func(txn *badger.Txn) error {
-		opts := badger.DefaultIteratorOptions
-		opts.Prefix = prefix
-		it := txn.NewIterator(opts)
-		defer it.Close()
-
-		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
-			item := it.Item()
-			err := item.Value(func(val []byte) error {
-				var doc Document
-				if err := json.Unmarshal(val, &doc); err != nil {
-					return err
-				}
-				documents = append(documents, doc)
-				return nil
-			})
-			if err != nil {
+	err := s.iterateWithPrefix(prefix, func(item *badger.Item) error {
+		return item.Value(func(val []byte) error {
+			var doc Document
+			if err := json.Unmarshal(val, &doc); err != nil {
 				return err
 			}
-		}
-		return nil
+			documents = append(documents, doc)
+			return nil
+		})
 	})
 
 	if err != nil {
@@ -802,8 +735,8 @@ func (s *BadgerStore) buildIndex(ctx context.Context) error {
 
 // StoreUserProfile stores the entire user profile for a chat
 func (s *BadgerStore) StoreUserProfile(ctx context.Context, profile *UserProfile) error {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	if s.currentDB == nil {
 		return fmt.Errorf("no chat is currently open")
@@ -867,8 +800,8 @@ func (s *BadgerStore) GetUserProfile(ctx context.Context, chatID string) (*UserP
 
 // UpsertProfileFact inserts or updates a single fact, and maintains history
 func (s *BadgerStore) UpsertProfileFact(ctx context.Context, chatID string, fact ProfileFact) error {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	if s.currentDB == nil {
 		return fmt.Errorf("no chat is currently open")
@@ -979,8 +912,8 @@ func (s *BadgerStore) GetProfileFact(ctx context.Context, chatID string, key str
 
 // DeleteProfileFact removes a fact from the user's profile
 func (s *BadgerStore) DeleteProfileFact(ctx context.Context, chatID string, key string) error {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	if s.currentDB == nil {
 		return fmt.Errorf("no chat is currently open")
@@ -1042,38 +975,23 @@ func (s *BadgerStore) GetFactHistory(ctx context.Context, chatID string, key str
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	if s.currentDB == nil {
-		return nil, fmt.Errorf("no chat is currently open")
-	}
-
 	var history []ProfileFact
 	prefix := []byte(fmt.Sprintf("profile_history:%s::", chatID))
 
-	err := s.currentDB.View(func(txn *badger.Txn) error {
-		opts := badger.DefaultIteratorOptions
-		opts.Prefix = prefix
-		it := txn.NewIterator(opts)
-		defer it.Close()
-
-		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
-			item := it.Item()
-			// Extract key from the full history key: profile_history:{chatID}:{timestamp}:{key}
-			fullKey := string(item.Key())
-			// Parse the fact key from the history entry
-			parts := splitHistoryKey(fullKey)
-			if len(parts) > 0 && parts[len(parts)-1] == key {
-				err := item.Value(func(val []byte) error {
-					var fact ProfileFact
-					if err := json.Unmarshal(val, &fact); err != nil {
-						return err
-					}
-					history = append(history, fact)
-					return nil
-				})
-				if err != nil {
+	err := s.iterateWithPrefix(prefix, func(item *badger.Item) error {
+		// Extract key from the full history key: profile_history:{chatID}:{timestamp}:{key}
+		fullKey := string(item.Key())
+		// Parse the fact key from the history entry
+		parts := splitHistoryKey(fullKey)
+		if len(parts) > 0 && parts[len(parts)-1] == key {
+			return item.Value(func(val []byte) error {
+				var fact ProfileFact
+				if err := json.Unmarshal(val, &fact); err != nil {
 					return err
 				}
-			}
+				history = append(history, fact)
+				return nil
+			})
 		}
 		return nil
 	})
@@ -1100,4 +1018,3 @@ func splitHistoryKey(fullKey string) []string {
 	}
 	return nil
 }
-
