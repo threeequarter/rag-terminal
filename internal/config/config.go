@@ -15,9 +15,10 @@ const (
 
 // Config represents the application configuration
 type Config struct {
-	TokenBudget         TokenBudgetConfig `yaml:"token_budget"`
-	CodeTokenBudget     TokenBudgetConfig `yaml:"code_token_budget"`
-	EmbeddingDimensions int               `yaml:"embedding_dimensions"`
+	TokenBudget           TokenBudgetConfig `yaml:"token_budget"`
+	CodeTokenBudget       TokenBudgetConfig `yaml:"code_token_budget"`
+	EmbeddingDimensions   int               `yaml:"embedding_dimensions"`
+	DefaultSystemPrompt   string            `yaml:"default_system_prompt"`
 }
 
 // TokenBudgetConfig defines how available input tokens are allocated
@@ -49,6 +50,7 @@ func DefaultConfig() *Config {
 			History:    0.05, // 5% for history (prioritize code context over conversation)
 		},
 		EmbeddingDimensions: 786,
+		DefaultSystemPrompt: "You are helpful assistant. Give correct, structured and straight-to-the-point answers. Always think hard when answering. Do not repeat yourself.",
 	}
 }
 
@@ -107,6 +109,40 @@ func Load() (*Config, error) {
 	var cfg Config
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("failed to parse config file: %w", err)
+	}
+
+	// Apply defaults for missing fields
+	defaults := DefaultConfig()
+	needsSave := false
+
+	if cfg.DefaultSystemPrompt == "" {
+		cfg.DefaultSystemPrompt = defaults.DefaultSystemPrompt
+		needsSave = true
+	}
+
+	if cfg.EmbeddingDimensions == 0 {
+		cfg.EmbeddingDimensions = defaults.EmbeddingDimensions
+		needsSave = true
+	}
+
+	// Check TokenBudget fields
+	if cfg.TokenBudget.InputRatio == 0 {
+		cfg.TokenBudget = defaults.TokenBudget
+		needsSave = true
+	}
+
+	// Check CodeTokenBudget fields
+	if cfg.CodeTokenBudget.InputRatio == 0 {
+		cfg.CodeTokenBudget = defaults.CodeTokenBudget
+		needsSave = true
+	}
+
+	// Save updated config back to file if any fields were populated
+	if needsSave {
+		if err := Save(&cfg); err != nil {
+			// Log but don't fail - we can still use the config
+			// The logging package might not be available here, so we just continue
+		}
 	}
 
 	// Validate config
