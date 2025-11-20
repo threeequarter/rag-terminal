@@ -10,6 +10,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 
+	"rag-terminal/internal/config"
 	"rag-terminal/internal/vector"
 )
 
@@ -55,8 +56,14 @@ func NewChatCreateModel(llmModel, embedModel string, width, height int) ChatCrea
 	nameInput.CharLimit = 100
 	nameInput.Width = 50
 
+	// Load config to get default system prompt
+	cfg, err := config.Load()
+	if err != nil {
+		cfg = config.DefaultConfig()
+	}
+
 	systemPromptArea := textarea.New()
-	systemPromptArea.Placeholder = "You are a helpful assistant..."
+	systemPromptArea.Placeholder = cfg.DefaultSystemPrompt
 	systemPromptArea.SetWidth(60)
 	systemPromptArea.SetHeight(5)
 	systemPromptArea.CharLimit = 1000
@@ -375,7 +382,11 @@ func (m ChatCreateModel) createChat() tea.Cmd {
 
 		systemPrompt := m.systemPromptArea.Value()
 		if systemPrompt == "" {
-			systemPrompt = "You are a helpful assistant."
+			cfg, err := config.Load()
+			if err != nil {
+				cfg = config.DefaultConfig()
+			}
+			systemPrompt = cfg.DefaultSystemPrompt
 		}
 
 		chat := &vector.Chat{
