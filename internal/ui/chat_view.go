@@ -173,7 +173,7 @@ func NewChatViewModel(chat *vector.Chat, pipeline rag.Pipeline, vectorStore vect
 	ta := textarea.New()
 	ta.Placeholder = "Type your message, drop file or folder..."
 	ta.Focus()
-	ta.CharLimit = 2000
+	ta.CharLimit = 4096
 	ta.SetWidth(width - 4)
 	ta.SetHeight(3)
 	ta.ShowLineNumbers = false

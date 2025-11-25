@@ -66,7 +66,7 @@ func NewChatCreateModel(llmModel, embedModel string, width, height int) ChatCrea
 	systemPromptArea.Placeholder = cfg.DefaultSystemPrompt
 	systemPromptArea.SetWidth(60)
 	systemPromptArea.SetHeight(5)
-	systemPromptArea.CharLimit = 1000
+	systemPromptArea.CharLimit = 4096
 
 	tempInput := textinput.New()
 	tempInput.Placeholder = "0.7"
